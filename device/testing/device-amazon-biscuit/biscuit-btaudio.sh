@@ -113,10 +113,19 @@ btctl discoverable off
 log "adapter configured, pairing closed until a window is opened"
 
 # 3. The playback bridge.
+#
+# Explicit buffers, because bluealsa-aplay's defaults (500 ms buffer, 100 ms
+# periods) were the largest single part of a ~0.8 s phone-to-speaker delay,
+# which put video visibly out of sync. Measured with a phone streaming: 150 ms
+# and 30 ms play clean through PipeWire, the loopback and biscuit-dsp, with no
+# xruns in pw-top. bluez-alsa 4.3.1 does not report this delay to the phone
+# (it never writes MediaTransport1.Delay), so the phone cannot compensate for
+# it and every millisecond here is visible.
 if ! pidof bluealsa-aplay >/dev/null 2>&1; then
 	start-stop-daemon --start --background --make-pidfile \
 		--pidfile /run/bluealsa-aplay.pid \
-		--exec /usr/bin/bluealsa-aplay -- --pcm=default --mixer-name=PCM
+		--exec /usr/bin/bluealsa-aplay -- --pcm=default --mixer-name=PCM \
+		--pcm-buffer-time=150000 --pcm-period-time=30000
 	sleep 2
 	if pidof bluealsa-aplay >/dev/null 2>&1; then
 		log "bluealsa-aplay started"
