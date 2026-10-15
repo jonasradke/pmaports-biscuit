@@ -124,6 +124,16 @@ static struct er_writer *render_reference;
  * separate. Going below 10 ms buys nothing. */
 #define DYN_RESET_SAMPLES 480      /* 10 ms */
 #define IDLE_PERIODS  1875
+/* The codec is NOT released when idle unless mbcl.conf sets
+ * idle_release_s: it is opened at start and held, so the amplifier is always
+ * on. Each amplifier transition is an audible pop - measured on pure digital
+ * silence, at both enable and disable - and releasing after ten seconds put
+ * one before the first sound of nearly every interaction, plus the 0.3 s the
+ * amplifier needs to come back. Stock does not cycle it per sound either.
+ * Measured cost of holding it: the SoC and CPU sensors read about 1.2 C
+ * warmer after nine minutes (the amplifier itself has no sensor).
+ * idle_release_s = 10 restores the old release, with IDLE_PERIODS's ten
+ * seconds. */
 /* How long a single "call on" holds the codec open without being refreshed.
  *
  * This is a WATCHDOG, not the call length. biscuit-btcall refreshes it every
@@ -403,6 +413,7 @@ typedef struct {
 
 	int volume;
 	int silent_periods;
+	int idle_release_periods;     /* 0: never release the codec */
 	int zero_run, dyn_reset_done;
 	int wake_request;            /* open the codec before audio arrives */
 	int cast_mute;               /* audio is going to Bluetooth instead */
@@ -538,6 +549,7 @@ static void load_mbcl(engine *e)
 	float limrel[NUM_BANDS]   = { 200.0f,   1.0f,   1.0f,   1.0f };
 	float full_th = -0.1f, full_rel = 200.0f, in_gain = 0.0f;
 	int   vol_after_lim = 1;
+	float idle_release_s = 0.0f;  /* 0: hold the codec, amplifier always on */
 	/* Stock gain staging uses a neutral terminal trim.  Keep all available
 	 * headroom at the codec/amplifier instead of compensating with a post-MBCL
 	 * attenuation. */
@@ -561,6 +573,7 @@ static void load_mbcl(engine *e)
 			else if (!strcmp(k, "full_lim_thresh_db")) full_th = v;
 			else if (!strcmp(k, "full_lim_release_ms")) full_rel = v;
 			else if (!strcmp(k, "volume_after_limiter")) vol_after_lim = (int)v;
+			else if (!strcmp(k, "idle_release_s")) idle_release_s = v;
 			else if (!strcmp(k, "push_80_db"))   push_db[1] = v;
 			else if (!strcmp(k, "push_90_db"))   push_db[2] = v;
 			else if (!strcmp(k, "push_100_db"))  push_db[3] = v;
@@ -584,6 +597,8 @@ static void load_mbcl(engine *e)
 	e->in_gain = db_to_lin(in_gain);
 	e->post_gain = db_to_lin(output_trim_db);
 	e->vol_after_lim = vol_after_lim;
+	e->idle_release_periods = idle_release_s > 0.0f
+		? (int)(idle_release_s * RATE / PERIOD + 0.5f) : 0;
 	for (int i = 0; i < 3; i++)
 		split_init(e, i, fc[i]);
 	/* Band 1 must traverse the allpass of every crossover above it and
@@ -1052,6 +1067,7 @@ static double now_monotonic(void)
 
 static int amp_state = -1;         /* 0 off, 1 warming, 2 ready */
 static double amp_opened_at;
+static double hold_retry_at;     /* next attempt to hold the codec open */
 
 static void set_amp_state(int state)
 {
@@ -1279,6 +1295,17 @@ int main(int argc, char **argv)
 			if (!out && open_output(&out, out_dev, verbose) == 0)
 				set_amp_state(1);
 		}
+		/* Held open: open it now rather than at the first sound, so the
+		 * one pop of the amplifier coming up happens at start, not in
+		 * front of whatever plays first. Retried every two seconds while
+		 * something else (biscuit_direct) holds the card. */
+		if (!out && e->idle_release_periods == 0 &&
+		    now_monotonic() >= hold_retry_at) {
+			if (open_output(&out, out_dev, verbose) == 0)
+				set_amp_state(1);
+			else
+				hold_retry_at = now_monotonic() + 2.0;
+		}
 		if (amp_state == 1 && now_monotonic() - amp_opened_at >= AMP_READY_S)
 			set_amp_state(2);
 
@@ -1334,7 +1361,7 @@ int main(int argc, char **argv)
 		}
 
 		if (silent) {
-			if (e->silent_periods < IDLE_PERIODS)
+			if (e->silent_periods < 1 << 30)
 				e->silent_periods++;
 
 			/* Never open the codec just to push silence into it.
@@ -1350,7 +1377,8 @@ int main(int argc, char **argv)
 			if (!out)
 				continue;
 
-			if (e->silent_periods >= IDLE_PERIODS &&
+			if (e->idle_release_periods > 0 &&
+			    e->silent_periods >= e->idle_release_periods &&
 			    e->call_until <= now_monotonic()) {
 				er_writer_reset(render_reference); snd_pcm_close(out);
 				out = NULL;
