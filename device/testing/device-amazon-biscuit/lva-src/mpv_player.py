@@ -7,14 +7,60 @@
 # licensed under the Apache License 2.0 (LICENSES/Apache-2.0.txt).
 # Changed by liamtw22 and contributors, 2026, for the Amazon Echo Dot
 # (2nd gen) postmarketOS port. The upstream copyright is unchanged.
-# Changes: qualification instrumentation hooks (read-only).
+# Changes: qualification instrumentation hooks (read-only); waits for the
+# speaker amplifier before a sound starts (_wait_for_amplifier).
 # mpv_player.py
 from . import qualification_v1 as _qualification_v1
 import logging
+import os
+import time
 from typing import Callable, List, Optional, Union
 
 from .player.libmpv import LibMpvPlayer
 from .player.state import PlayerState
+
+
+# biscuit-dsp's speaker amplifier state, and its control FIFO. See
+# biscuit-amp-wait: after ten seconds of silence the amplifier is off, and comes
+# back about 275 ms after the next sound starts, so the wake chime, the mute
+# sound and the start of every reply lost their beginning and were cut by the
+# click of the amplifier switching on.
+_AMP_STATE = "/run/biscuit-dsp/amp"
+_DSP_CONTROL = "/run/biscuit-dsp/control"
+_AMP_WAIT_S = 0.6
+
+
+def _read_amp_state() -> str:
+    try:
+        with open(_AMP_STATE) as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def _wait_for_amplifier() -> None:
+    """Return once the amplifier can be heard; wake it if it is off.
+
+    At once when it is already up or biscuit-dsp is not running, and never
+    longer than _AMP_WAIT_S: a late sound is better than none.
+    """
+    state = _read_amp_state()
+    if state in ("", "ready"):
+        return
+    if state == "off":
+        try:
+            fd = os.open(_DSP_CONTROL, os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                os.write(fd, b"wake\n")
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+    deadline = time.monotonic() + _AMP_WAIT_S
+    while time.monotonic() < deadline:
+        time.sleep(0.01)
+        if _read_amp_state() in ("", "ready"):
+            return
 
 
 class MpvMediaPlayer:
@@ -71,7 +117,8 @@ class MpvMediaPlayer:
         self._playlist = urls
         self._done_callback = done_callback
 
-        # Start playing first URL
+        # Start playing first URL, once the speaker can be heard.
+        _wait_for_amplifier()
         next_url = self._playlist.pop(0)
         self._player.play(next_url, done_callback=self._on_track_finished, stop_first=stop_first)
 
