@@ -24,7 +24,8 @@
 #
 #   4. Something must move the decoded stream to the speaker. bluealsa exposes
 #      the A2DP stream as a PCM; it does not play it. bluealsa-aplay does.
-#      --mixer-control=PCM because this card has no 'Master' control.
+#      --volume=none: it touches no mixer, and biscuit-btvolume makes the
+#      phone's volume the Echo's own (see that file for why).
 #
 # Bluetooth is brought up late on this device (wifi.start writes bt_now once
 # wlan0 exists, because the WMT BT function-on during CONSYS bring-up breaks
@@ -124,7 +125,7 @@ log "adapter configured, pairing closed until a window is opened"
 if ! pidof bluealsa-aplay >/dev/null 2>&1; then
 	start-stop-daemon --start --background --make-pidfile \
 		--pidfile /run/bluealsa-aplay.pid \
-		--exec /usr/bin/bluealsa-aplay -- --pcm=default --mixer-control=PCM \
+		--exec /usr/bin/bluealsa-aplay -- --pcm=default --volume=none \
 		--pcm-buffer-time=80000 --pcm-period-time=20000
 	sleep 2
 	if pidof bluealsa-aplay >/dev/null 2>&1; then

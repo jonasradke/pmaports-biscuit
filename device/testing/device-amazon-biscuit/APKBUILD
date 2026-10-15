@@ -160,10 +160,12 @@ source="
 	biscuit-ring.py
 	biscuit-audio.py
 	biscuit-btring.py
+	biscuit-btvolume.py
 	biscuit-als.initd
 	biscuit-ring.initd
 	biscuit-audio.initd
 	biscuit-btring.initd
+	biscuit-btvolume.initd
 	biscuit-btaudio.sh
 	biscuit-btaudio.initd
 	biscuit-setup.sh
@@ -462,7 +464,7 @@ package() {
 	# not expose, so they were exit-0 no-ops. biscuit-ring owns the ring now,
 	# and two writers would fight over the same LEDs.
 	local _svc
-	for _svc in biscuit-als biscuit-ring biscuit-audio biscuit-btring; do
+	for _svc in biscuit-als biscuit-ring biscuit-audio biscuit-btring biscuit-btvolume; do
 		install -Dm755 "$srcdir/$_svc.py" "$pkgdir/usr/bin/$_svc.py"
 		install -Dm755 "$srcdir/$_svc.initd" "$pkgdir/etc/init.d/$_svc"
 		# biscuit-ring goes in BOOT, not default. In default it was one of 55
@@ -1390,11 +1392,13 @@ e9cb4797a3a2e0c3dc1460601a64dc7c779a04cdf8333ecded2abf20cc0bd8f7119864b18afead82
 2eb2d145f77414483d78d026efcf4b6860e17212ae95f33ffdc3a4f4a175ca22cf5f1767de03820b3dc0407335bd8b8de08ba4fd2305f4bb7fd9cdadfa3863e8  biscuit-ring.py
 40046a58b1f4dfbad829e67efbfcc290b52336764e3f4118aeebd4f01697c56ac9b3b323fbf1673e15723190fba63ca384a5727ed44f1cd26650e3407c6a271d  biscuit-audio.py
 8cadfae159798599675b0e0feca3e63a4aedd6533f32685b77b66ddfee583898aa87bb4c30594c2402bf00baa587f9446de9b8e9231fe9b7400b488e16037acd  biscuit-btring.py
+427445e889958a180de8f45b6b7071633e8c1100fe84fe43a59874713cd676eee18af0b1d30f62448116c93db011edefa85fdd88d0b7ccb5f0e433890b0dd829  biscuit-btvolume.py
 a9ec1d0b7866e5f10223ea9d0f6a545e8fdecb39dbaf970e21ad437597a44ecb0c369f5bc3e00b74dd20f0d1de10e768bfb8ce87b272977f292e10002b8c6fe7  biscuit-als.initd
 7056fd952961a88be4480eb84c23b419a9a22a9dc2aeb3bf9c09727d954470af956e6a92131b87c5d4ec94fc4f97578ac0518e82d6844e698920da34f99a8ca4  biscuit-ring.initd
 6f7e45c477accbf00f66c0980f74bab9d04733ef83f36490b0134195e08209bc3a737fe9d992155e91dce840e8177c51b6aa661e2b7754f67e3c716a75c7ffa2  biscuit-audio.initd
 712474e0da0d99f7fda040efc795fa88a30a670a654027a15a17d451b2d23be7b49e37f26edad4d3bf7ae6b55f8552d88ec89a0cc54c32b9177933beb6002ac0  biscuit-btring.initd
-670ae6f198c6a3405b855d69d535c1c3330217c6b2b0d340edc28c91c18f57e3e860ab9e6b68f2a5be2ee3210e0234338ee2fb854d2e880b80b476f2daa126e0  biscuit-btaudio.sh
+1b82c5ff18d1d6270c30430a9089ca6190ad6e1e0296361149f73028d308a23ddc058b798de6bd927aca6611e1869a5b384e51d5b62f14d5bd22c48f3773a032  biscuit-btvolume.initd
+714ea5149e9e35befa261f8d1a0a92c45a44a749564483cea2b3a1e4c598158a9cffebb31034fca458bf8d277044c7e154489044c91108781ed6f4a53887e534  biscuit-btaudio.sh
 24c2a37b6777080ec6eb6f091d85c1a5c3083f52e1625bce77cb531b8c5349263854ea4afa37fec0797017117906e6ef1254a660f6680f9c1751a28d1e672a1d  biscuit-btaudio.initd
 f2e260df03178abf7cd5642729f6bfe9f32e6e9afe4257be1a6ec427391f6b5494a6067da3b26c362e4cc8e94531ef1368aba714387e52ecff20e6a783a944ba  biscuit-setup.sh
 ce517e42ca7c17ec6dccaa9e1ff7741aa0fe74ef8bfb40198d0c2a02566430f07a4c07d15baaf5561be6aca55125e14c24266e2f0e8a2a4ba4fc1c4366090233  biscuit-earcon-map.py
