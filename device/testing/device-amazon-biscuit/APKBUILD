@@ -143,7 +143,10 @@ depends="
 # speexdsp-dev: biscuit-call-dsp is a SpeexDSP echo canceller. It was absent
 # here and the package built anyway, because nothing built call-dsp from source
 # before - the shipped binary came from an ad-hoc script outside this APKBUILD.
-makedepends="devicepkg-dev alsa-lib-dev sbc-dev patch speexdsp-dev"
+# pipewire-dev and libsndfile-dev: biscuit-tick plays the volume tone through a
+# PipeWire stream it keeps open, from a file it decodes once.
+makedepends="devicepkg-dev alsa-lib-dev sbc-dev patch speexdsp-dev pipewire-dev
+	libsndfile-dev"
 source="
 	deviceinfo
 	05-boot-rw.hook
@@ -193,6 +196,7 @@ source="
 	biscuit-setup.initd
 	biscuit-dsp.c
 	biscuit-dsp.initd
+	biscuit-tick.c
 	biscuit-mic-coeff.py
 	biscuit-mic-coeff.initd
 	biscuit-persist.initd
@@ -440,6 +444,10 @@ build() {
 	${CC:-gcc} $CFLAGS $LDFLAGS -O2 -ffast-math -I"$srcdir" -o biscuit-dsp \
 		"$srcdir"/biscuit-dsp.c "$srcdir"/biscuit-echo-reference.c \
 		-lasound -lm
+
+	# The volume tone player biscuit-audio drives, see biscuit-tick.c.
+	${CC:-gcc} $CFLAGS $LDFLAGS -O2 -o biscuit-tick "$srcdir"/biscuit-tick.c \
+		$(pkg-config --cflags --libs libpipewire-0.3 sndfile)
 }
 
 # pre-upgrade keeps the speaker correction curve of a device upgrading from
@@ -610,6 +618,7 @@ package() {
 	# it risks the driver; biscuit_direct in asound.conf bypasses both together
 	# and is the only supported bypass.
 	install -Dm755 biscuit-dsp "$pkgdir"/usr/bin/biscuit-dsp
+	install -Dm755 biscuit-tick "$pkgdir"/usr/bin/biscuit-tick
 	install -Dm755 "$srcdir"/biscuit-dsp.initd "$pkgdir"/etc/init.d/biscuit-dsp
 	install -d "$pkgdir"/etc/runlevels/default
 	ln -sf /etc/init.d/biscuit-dsp "$pkgdir"/etc/runlevels/default/biscuit-dsp
@@ -1388,7 +1397,7 @@ e9cb4797a3a2e0c3dc1460601a64dc7c779a04cdf8333ecded2abf20cc0bd8f7119864b18afead82
 429a9aca6077ca11e49cad71b7ce59a9dcee64b06a40b67b82f3e6e039d5e36fea2141950eee145a4685086c3ef93055dc7b42a159cc8cbc77ae698ebd649b46  zz-boot-done.start
 561d7274fe9e20ad110efb3a1b95b84112ba1542d4696b59183753c792564c73a49f5e0a106cda9f1b5dcb73a451a4cb982b491eae802a5cd3700d57c7e3eb2b  biscuit-als.py
 2eb2d145f77414483d78d026efcf4b6860e17212ae95f33ffdc3a4f4a175ca22cf5f1767de03820b3dc0407335bd8b8de08ba4fd2305f4bb7fd9cdadfa3863e8  biscuit-ring.py
-40046a58b1f4dfbad829e67efbfcc290b52336764e3f4118aeebd4f01697c56ac9b3b323fbf1673e15723190fba63ca384a5727ed44f1cd26650e3407c6a271d  biscuit-audio.py
+35a3e4a40d3d843b792c43c6120d9f5799b480c4b4c39d2d1c9e7628d289fdc873b79322af05ec1791cb1a501302c2355e70b4988fb6ad578641b9f4e8fe333f  biscuit-audio.py
 8cadfae159798599675b0e0feca3e63a4aedd6533f32685b77b66ddfee583898aa87bb4c30594c2402bf00baa587f9446de9b8e9231fe9b7400b488e16037acd  biscuit-btring.py
 a9ec1d0b7866e5f10223ea9d0f6a545e8fdecb39dbaf970e21ad437597a44ecb0c369f5bc3e00b74dd20f0d1de10e768bfb8ce87b272977f292e10002b8c6fe7  biscuit-als.initd
 7056fd952961a88be4480eb84c23b419a9a22a9dc2aeb3bf9c09727d954470af956e6a92131b87c5d4ec94fc4f97578ac0518e82d6844e698920da34f99a8ca4  biscuit-ring.initd
@@ -1421,8 +1430,9 @@ ceb146692bdddb9c3021350c77259d82788ee5ece26b22cf57d7eefed3fd3fcb602125d77b453674
 c526b40ab01168a38d756079facc022792ada1a145c90ba3177aa33d4dd075cf387f152da3094909d5a483a25f7edf0c0c3f91bd2c2f661fabc0f37a89ffd878  biscuit-settings.initd
 735f9d33114a39af242e8bb8093f0c1db0338034fa6901a19b9c6ea334c5753c3f20fe10bc5a639433f4b398afb360212eedad5e05609a7398fffc37fdd28f16  biscuit-btid.initd
 89f307f516e9f05ba1ef0d0e84d7d66aa537f818fd515a4094c074d4fea5f43fa12baeb80971eacd1bb64ca3848b4025a1673827d19f1abf906ec2504ee426d1  biscuit-setup.initd
-2880ae53bd7865aa72626c8d2b353d252ae0ad0510cb890eaecd89c4e4acbb52f76bb14e78287930f147eaac22f47ea0a7d30c89387e1a59cc65b3f27aa04722  biscuit-dsp.c
+2db80b4e6fe3a9e6411711bb26c3716e1e23bef18788012f4c414e4e723bb55fe9f6efdc83fb9e5504f6437a73da41e0db3bee08c1135443863ba7a10986043f  biscuit-dsp.c
 9c2c4723c008e182bb9361d8d243cb0fb2247034c43207224a6c21484db485b8004096f62b8874b1bed60012ac52f94647bc90001d1201a9750b26c7d2c21e17  biscuit-dsp.initd
+005540e5336a7b889612db7872303bbf56497000762ca7ec6fabfc96215708cf091c72d76375db6642d1640abdfcedfdcb2e15e59cbbfb14c08583c793a2dcd4  biscuit-tick.c
 adf094d4b4b203bcff1cce17d28b8acb678b0b07faf831f247d241ad67cd4346500bc4a582a5d25a3bdfa7948a72fc16e48c20af4de97e93297787a74818d0ca  biscuit-mic-coeff.py
 e6cb7f91b733df58fbf3041d06f7b6ca681ae770abd6e3c0447dbc304a4f365a4af2dfc3ec10600bef8ac8b5a7400b05d8bd336498fddb4ae3905c10d8e61c98  biscuit-mic-coeff.initd
 fa3f1469db6d0b7077d29208217353a5ebe7bc28337f4960527ae0416c411b4b61cf00c2d15b275b245ebf858cf6fb4737fdf88f5726225af1a06afa6c337cfd  biscuit-persist.initd

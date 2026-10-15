@@ -89,6 +89,12 @@ static struct er_writer *render_reference;
 #define NUM_BANDS     4
 #define MAX_USER_EQ   16
 #define GAIN_SLEW_MS  120.0f       /* volume-push ramp */
+/* The volume taper's ramp, separate from the push's. Sharing the push's
+ * 120 ms made every key press take about 0.35 s to be heard in full, so a
+ * quick run of presses always trailed the fingers. The taper moves about
+ * 2 dB per step, and a 20 ms ramp is still far too slow to click; the push
+ * keeps 120 ms because its top step is a 14.6 dB jump. */
+#define VOL_SLEW_MS   20.0f
 #define LOOKAHEAD     192          /* 4 ms: stock has a dedicated 48 kHz MBC buffer */
 /* Stock's libasp exposes LookAhead_ms and HoldTime_ms for MBLimiter but its
  * public MBCL.cfg exposes only threshold and release.  Sixteen milliseconds
@@ -352,6 +358,7 @@ typedef struct {
 	int   hpos;
 	float push, push_target;     /* linear gain, slewed */
 	float push_slew;
+	float vol_slew;                 /* the taper's, see VOL_SLEW_MS */
 
 	/* user EQ */
 	biquad user_eq[MAX_USER_EQ];
@@ -912,7 +919,7 @@ static void process(engine *e, float *buf, int frames)
 			 * volume - measured about 2 dB of crest factor on mid-level
 			 * content. Set volume_after_limiter = 0 to get the old
 			 * behaviour back. */
-			e->vol_post += (e->vol_post_target - e->vol_post) * e->push_slew;
+			e->vol_post += (e->vol_post_target - e->vol_post) * e->vol_slew;
 			y *= e->vol_post;
 		}
 
@@ -1151,6 +1158,7 @@ int main(int argc, char **argv)
 	e->push = e->push_target = 1.0f;
 	e->vol_post = e->vol_post_target = 1.0f;
 	e->push_slew = 1.0f - expf(-1.0f / (RATE * (GAIN_SLEW_MS / 1000.0f)));
+	e->vol_slew = 1.0f - expf(-1.0f / (RATE * (VOL_SLEW_MS / 1000.0f)));
 	load_curves(e);
 	load_user_eq(e);
 	load_mbcl(e);
