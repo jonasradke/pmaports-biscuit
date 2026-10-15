@@ -135,6 +135,24 @@ static struct er_writer *render_reference;
 #define CALL_HOLD_S   20.0
 
 #define CTRL_FIFO     "/run/biscuit-dsp/control"
+/* Whether the speaker amplifier can be heard yet: "off", "warming" or "ready".
+ *
+ * Opening the codec does not make the speaker audible at once. The machine
+ * driver enables the amplifier 250 ms after the stream starts, so it is not
+ * live across the DAC's power-up transient, and the amplifier then takes 25 ms
+ * to warm up (MT8163_BISCUIT_AMP_ON_DELAY_MS and _WARMUP_MS in the kernel). A
+ * short sound played into that window loses its start, and the amplifier
+ * switching on part way through it is heard as a click. That was always true
+ * of the earcons, whose player took about 190 ms to start and so lost the rest;
+ * the volume tick, which reaches the codec in a few milliseconds, lost most of
+ * itself.
+ *
+ * Short sounds read this before they start: on "off" they ask for a wake and,
+ * like "warming", wait for "ready". Long ones - music, a call - do not need to,
+ * and nothing here delays them. Replaced atomically, so a reader never sees a
+ * partial word. */
+#define AMP_STATE     "/run/biscuit-dsp/amp"
+#define AMP_READY_S   0.30         /* 250 ms delay + 25 ms warm-up + margin */
 /* The speaker correction curve, in the order it is looked for:
  *
  *   EQ_OVERRIDE_FIR   a hand-placed curve, and the unity impulse biscuit_eq.py
@@ -1032,6 +1050,25 @@ static double now_monotonic(void)
 	return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
 }
 
+static int amp_state = -1;         /* 0 off, 1 warming, 2 ready */
+static double amp_opened_at;
+
+static void set_amp_state(int state)
+{
+	static const char *const names[] = { "off", "warming", "ready" };
+	if (state == amp_state)
+		return;
+	amp_state = state;
+	if (state == 1)
+		amp_opened_at = now_monotonic();
+	FILE *f = fopen(AMP_STATE ".tmp", "w");
+	if (!f)
+		return;
+	fprintf(f, "%s\n", names[state]);
+	if (fclose(f) == 0)
+		rename(AMP_STATE ".tmp", AMP_STATE);
+}
+
 static void drain_control(engine *e, int fd)
 {
 	char buf[256];
@@ -1209,6 +1246,7 @@ int main(int argc, char **argv)
 	/* O_RDWR, not O_RDONLY: keeps a writer on the pipe so reads return 0
 	 * instead of EOF-spinning when no one has it open. */
 	int ctrl = open(CTRL_FIFO, O_RDWR | O_NONBLOCK);
+	set_amp_state(0);
 	if (ctrl < 0)
 		logmsg("control fifo unavailable: %s", strerror(errno));
 
@@ -1238,9 +1276,11 @@ int main(int argc, char **argv)
 		if (e->wake_request) {
 			e->wake_request = 0;
 			e->silent_periods = 0;
-			if (!out)
-				open_output(&out, out_dev, verbose);
+			if (!out && open_output(&out, out_dev, verbose) == 0)
+				set_amp_state(1);
 		}
+		if (amp_state == 1 && now_monotonic() - amp_opened_at >= AMP_READY_S)
+			set_amp_state(2);
 
 		snd_pcm_sframes_t got = snd_pcm_readi(in, ibuf, PERIOD);
 		if (got < 0) {
@@ -1315,6 +1355,7 @@ int main(int argc, char **argv)
 				er_writer_reset(render_reference); snd_pcm_close(out);
 				out = NULL;
 				reset_state(e);
+				set_amp_state(0);
 				if (verbose)
 					logmsg("idle: codec released");
 				continue;
@@ -1343,7 +1384,8 @@ int main(int argc, char **argv)
 		}
 
 		if (!out) {
-			open_output(&out, out_dev, verbose);
+			if (open_output(&out, out_dev, verbose) == 0)
+				set_amp_state(1);
 			if (!out) {
 				/* Something else holds the codec - most likely a
 				 * deliberate biscuit_direct test. Drop this
@@ -1367,6 +1409,7 @@ int main(int argc, char **argv)
 			logmsg("write: %s", snd_strerror((int)put));
 			er_writer_reset(render_reference); snd_pcm_close(out);
 			out = NULL;
+			set_amp_state(0);
 		}
 	}
 
@@ -1375,6 +1418,7 @@ int main(int argc, char **argv)
 	if (out) { er_writer_reset(render_reference); snd_pcm_close(out); }
 	if (ctrl >= 0) close(ctrl);
 	unlink(CTRL_FIFO);
+	unlink(AMP_STATE);
 	er_writer_close(render_reference);
 	free(ibuf);
 	free(mono);

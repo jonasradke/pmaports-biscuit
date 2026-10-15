@@ -21,12 +21,22 @@
  * graph cycle later. A tone still playing is faded out over 2 ms underneath
  * the new one rather than cut, which would click.
  *
+ * Played into a speaker amplifier that is still off, the tick loses its start
+ * and the amplifier is heard clicking on part way through: after ten seconds
+ * of silence biscuit-dsp releases the codec, and the amplifier comes back about
+ * 275 ms after the next open. So a press first reads biscuit-dsp's amplifier
+ * state, and unless it says "ready" asks for a wake and holds the tick until it
+ * does. That costs the first press after a quiet spell about 0.3 s; while the
+ * amplifier is up, which it is for ten seconds after any sound, a press is
+ * still heard at once.
+ *
  * Feeding pw-cat through a pipe was tried first and is NOT equivalent: pw-cat
  * reads its input inside the process callback, any wait there misses the
  * cycle, and the sink pads with a 256-frame run of silence - a click inside
  * the tone, several times in a quick run of presses.
  */
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <signal.h>
 #include <stdio.h>
@@ -43,11 +53,17 @@
 #define FADE_FRAMES   96         /* 2 ms */
 #define LEAD_FRAMES   48         /* keep 1 ms before the onset */
 #define SILENT_BELOW  64         /* the head of the file counts as silent */
+#define AMP_STATE     "/run/biscuit-dsp/amp"
+#define DSP_CONTROL   "/run/biscuit-dsp/control"
+#define AMP_POLL_MS   10
+#define AMP_WAIT_MS   600        /* play anyway after this: never lose a tick */
 
 struct tick {
 	struct pw_main_loop *loop;
 	struct pw_stream *stream;
 	struct spa_source *input;
+	struct spa_source *amp_timer;
+	int amp_waited_ms;           /* -1 when no tick is waiting */
 
 	short *pcm;                  /* interleaved stereo, onset first */
 	long frames;
@@ -192,6 +208,79 @@ static const struct pw_stream_events stream_events = {
 	.process = on_process,
 };
 
+/* "ready", "warming", "off", or "" when biscuit-dsp is not running. */
+static void amp_state(char *buf, size_t len)
+{
+	buf[0] = 0;
+	int fd = open(AMP_STATE, O_RDONLY);
+	if (fd < 0)
+		return;
+	ssize_t got = read(fd, buf, len - 1);
+	close(fd);
+	buf[got > 0 ? got : 0] = 0;
+	buf[strcspn(buf, "\n")] = 0;
+}
+
+static void dsp_wake(void)
+{
+	/* Non-blocking: with biscuit-dsp stopped there is no reader, and a plain
+	 * open would hang the tick player. */
+	int fd = open(DSP_CONTROL, O_WRONLY | O_NONBLOCK);
+	if (fd < 0)
+		return;
+	ssize_t n = write(fd, "wake\n", 5);
+	(void)n;
+	close(fd);
+}
+
+static void arm_amp_timer(struct tick *t, int ms)
+{
+	struct timespec value = { 0, ms * 1000000L }, interval = { 0, 0 };
+	pw_loop_update_timer(pw_main_loop_get_loop(t->loop), t->amp_timer,
+			     &value, &interval, false);
+}
+
+/* Start the tone, or wait for the amplifier and start it then. */
+static void request_play(struct tick *t)
+{
+	char state[16];
+	amp_state(state, sizeof(state));
+	/* No state file: an older biscuit-dsp, or none - nothing to wait for. */
+	if (!state[0] || !strcmp(state, "ready")) {
+		t->amp_waited_ms = -1;
+		__atomic_store_n(&t->start, 1, __ATOMIC_RELEASE);
+		return;
+	}
+	if (!strcmp(state, "off"))
+		dsp_wake();
+	if (t->amp_waited_ms < 0) {
+		t->amp_waited_ms = 0;
+		arm_amp_timer(t, AMP_POLL_MS);
+	}
+	/* A press while already waiting changes nothing: the tick plays once,
+	 * when the amplifier is up. */
+}
+
+static void on_amp_timer(void *data, uint64_t expirations)
+{
+	struct tick *t = data;
+	(void)expirations;
+	if (t->amp_waited_ms < 0)
+		return;
+	char state[16];
+	amp_state(state, sizeof(state));
+	t->amp_waited_ms += AMP_POLL_MS;
+	if (!state[0] || !strcmp(state, "ready") || t->amp_waited_ms >= AMP_WAIT_MS) {
+		if (state[0] && strcmp(state, "ready"))
+			fprintf(stderr, "biscuit-tick: amplifier still %s after %d ms; "
+				"playing anyway\n", state, t->amp_waited_ms);
+		t->amp_waited_ms = -1;
+		__atomic_store_n(&t->start, 1, __ATOMIC_RELEASE);
+		return;
+	}
+	arm_amp_timer(t, AMP_POLL_MS);
+}
+
 static void on_input(void *data, int fd, uint32_t mask)
 {
 	struct tick *t = data;
@@ -214,7 +303,7 @@ static void on_input(void *data, int fd, uint32_t mask)
 		t->line[t->used] = 0;
 		t->used = 0;
 		if (!strcmp(t->line, "play"))
-			__atomic_store_n(&t->start, 1, __ATOMIC_RELEASE);
+			request_play(t);
 		else if (t->line[0])
 			fprintf(stderr, "biscuit-tick: unknown command '%s'\n",
 				t->line);
@@ -234,6 +323,7 @@ int main(int argc, char *argv[])
 	memset(&t, 0, sizeof(t));
 	t.pos = -1;
 	t.fade_pos = -1;
+	t.amp_waited_ms = -1;
 
 	if (argc != 2) {
 		fprintf(stderr, "usage: biscuit-tick <sound file>\n");
@@ -247,6 +337,7 @@ int main(int argc, char *argv[])
 	struct pw_loop *loop = pw_main_loop_get_loop(t.loop);
 	pw_loop_add_signal(loop, SIGINT, on_signal, &t);
 	pw_loop_add_signal(loop, SIGTERM, on_signal, &t);
+	t.amp_timer = pw_loop_add_timer(loop, on_amp_timer, &t);
 	t.input = pw_loop_add_io(loop, STDIN_FILENO,
 				 SPA_IO_IN | SPA_IO_ERR | SPA_IO_HUP, false,
 				 on_input, &t);
