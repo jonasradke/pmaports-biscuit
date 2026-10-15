@@ -2369,6 +2369,16 @@ class Ducker:
                 continue
             if any(name in app for name in self.FEEDBACK_PLAYERS):
                 continue
+            if vol == 0:
+                # 0% here means "never set", not silent. With stream restore off
+                # (52-biscuit-no-stream-restore.conf) nothing gives a stream
+                # opened through the PipeWire ALSA plugin - sendspin, aplay - any
+                # channel volumes, it plays at unity, and pactl reports the empty
+                # list as 0%. Taken at face value the check below skipped it as
+                # already ducked, so music was never turned down at all. A stream
+                # is only ever deliberately quiet on this device while we hold
+                # it ducked, so unity is the right thing to save and restore.
+                vol = 100
             if vol <= level:
                 # Already at or below the ducked level. Either this is a duck of
                 # ours that was never lifted, or the stream is deliberately
