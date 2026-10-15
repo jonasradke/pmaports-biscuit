@@ -124,7 +124,7 @@ log "adapter configured, pairing closed until a window is opened"
 if ! pidof bluealsa-aplay >/dev/null 2>&1; then
 	start-stop-daemon --start --background --make-pidfile \
 		--pidfile /run/bluealsa-aplay.pid \
-		--exec /usr/bin/bluealsa-aplay -- --pcm=default --mixer-name=PCM \
+		--exec /usr/bin/bluealsa-aplay -- --pcm=default --mixer-control=PCM \
 		--pcm-buffer-time=80000 --pcm-period-time=20000
 	sleep 2
 	if pidof bluealsa-aplay >/dev/null 2>&1; then
