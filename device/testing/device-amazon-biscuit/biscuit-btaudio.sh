@@ -24,7 +24,7 @@
 #
 #   4. Something must move the decoded stream to the speaker. bluealsa exposes
 #      the A2DP stream as a PCM; it does not play it. bluealsa-aplay does.
-#      --mixer-name=PCM because this card has no 'Master' control.
+#      --mixer-control=PCM because this card has no 'Master' control.
 #
 # Bluetooth is brought up late on this device (wifi.start writes bt_now once
 # wlan0 exists, because the WMT BT function-on during CONSYS bring-up breaks
@@ -116,11 +116,11 @@ log "adapter configured, pairing closed until a window is opened"
 #
 # Explicit buffers, because bluealsa-aplay's defaults (500 ms buffer, 100 ms
 # periods) were the largest single part of a ~0.8 s phone-to-speaker delay,
-# which put video visibly out of sync. Measured with a phone streaming: 150 ms
-# and 30 ms play clean through PipeWire, the loopback and biscuit-dsp, with no
-# xruns in pw-top. bluez-alsa 4.3.1 does not report this delay to the phone
-# (it never writes MediaTransport1.Delay), so the phone cannot compensate for
-# it and every millisecond here is visible.
+# which put video visibly out of sync. Measured with a phone streaming: 80 ms
+# and 20 ms play clean through PipeWire, the loopback and biscuit-dsp, with no
+# xruns in pw-top. bluez-alsa 5.0 reports codec, processing and this buffer to
+# the phone as the A2DP delay (MediaTransport1.Delay, ~160 ms in total here),
+# so the phone holds video back by that much; 4.3.1 reported nothing.
 if ! pidof bluealsa-aplay >/dev/null 2>&1; then
 	start-stop-daemon --start --background --make-pidfile \
 		--pidfile /run/bluealsa-aplay.pid \
