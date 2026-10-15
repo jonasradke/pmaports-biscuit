@@ -2958,6 +2958,7 @@ class Ring:
         self.ducker = Ducker()
         self._duck_lock = asyncio.Lock()
         self._duck_queued = False
+        self._restore_handle = None
         self.volume = VolumeReconciler()
         # The HA commands that start or stop a service, in order.
         self.jobs = SerialJobs()
@@ -3359,7 +3360,10 @@ class Ring:
             return
         if name in IDLE_EVENTS:
             self.activity = None
-            self._duck_async(self.ducker.restore)
+            if name == "disconnected":
+                self._duck_async(self.ducker.restore)
+            else:
+                self._restore_later()
             if self.muted:
                 self._play(self.mute_animation())
             else:
@@ -3394,9 +3398,46 @@ class Ring:
         # interaction, and raising the music underneath it would talk over the
         # answer the user just asked for.
         if name == "wake_word_detected":
+            self._cancel_restore()
             self._duck_async(self.ducker.duck)
         elif name in ("tts_finished", "pipeline_error"):
+            self._restore_later()
+
+    # How long the music stays down after the assistant says it has finished.
+    #
+    # tts_finished is mpv's end-of-file, and mpv reaches end-of-file as soon as
+    # the last of the reply is in its 0.8 s audio buffer (libmpv.py), not when
+    # it has been heard - and the PipeWire, loopback and DSP stages add their
+    # own latency after that. Measured on a 2.1 s reply: the music came back
+    # 1.3 s in, 0.8 s before the reply's stream closed, talking over the end of
+    # the answer. The assistant's buffer is upstream's choice and keeps its
+    # earcons gapless, so the wait is here instead.
+    RESTORE_DELAY_S = 1.2
+
+    def _cancel_restore(self):
+        handle, self._restore_handle = self._restore_handle, None
+        if handle is not None:
+            handle.cancel()
+
+    def _restore_later(self):
+        """Lift the duck once the reply has actually been heard.
+
+        A wake word inside the delay cancels it, so a follow-up question keeps
+        the music down instead of having it lifted under the new duck - which
+        would otherwise be a no-op, since the ducker is still holding.
+        """
+        self._cancel_restore()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
             self._duck_async(self.ducker.restore)
+            return
+
+        def _fire():
+            self._restore_handle = None
+            self._duck_async(self.ducker.restore)
+
+        self._restore_handle = loop.call_later(self.RESTORE_DELAY_S, _fire)
 
     def _duck_async(self, action):
         """Run a duck/restore in a worker thread, preserving their order.
