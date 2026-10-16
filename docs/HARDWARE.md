@@ -59,6 +59,12 @@ sequencing and the Bluetooth transport.
   near 0.25 s. bluez-alsa 5.0 (`temp/bluez-alsa`) reports the delay to the
   phone through BlueZ's `MediaTransport1.Delay`, so a phone that supports A2DP
   delay reporting holds video back to match. 4.3.1 reported 0 ms.
+- **Band choice:** the driver chooses the access point itself, by signal, and
+  wpa_supplicant only hints. `wifi.start` raises the driver's 5 GHz bonus
+  (`roam_5g_bias` in `/proc/net/wlan/roam_param`) to +30 dB above -82 dBm
+  before the first connect, so a dual-band network is joined on 5 GHz. It
+  cannot be changed on a running connection: after a disconnect the driver
+  does not tell cfg80211, and every new connect fails until a reboot.
 - **Bluetooth address:** read from the unit's identity block (IDME) and
   programmed into the controller at start-up (0097).
 - **Calls:** the controller does not send call audio over HCI. It leaves it in a
