@@ -79,11 +79,17 @@ jobs = $(nproc)
 EOF
 # init with every answer defaulted: it takes the values above and creates the
 # work directory. Its prompts change between versions; the config is the
-# source of truth, and the checks below catch a wrong default.
-yes '' | python3 "$PMB_DIR/pmbootstrap.py" -p "$APORTS" init >/dev/null 2>&1 ||
-	{ yes '' | python3 "$PMB_DIR/pmbootstrap.py" -p "$APORTS" init | tail -n 40; die "pmbootstrap init failed"; }
-for kv in "device = amazon-biscuit" "ui = none" "boot_size = 128" "extra_packages = none"; do
-	grep -qx "$kv" "$CFG" || die "pmbootstrap init changed the config: expected '$kv'"
+# source of truth, and the checks below catch a wrong default. init rewrites
+# the file with only the values that differ from pmbootstrap's defaults, so
+# the effective values are asked of pmbootstrap rather than grepped.
+yes '' 2>/dev/null | python3 "$PMB_DIR/pmbootstrap.py" -p "$APORTS" init > "$OUT.init.log" 2>&1 ||
+	{ tail -n 40 "$OUT.init.log"; die "pmbootstrap init failed"; }
+for kv in "device=amazon-biscuit" "ui=none" "systemd=never" "boot_size=128" \
+		"extra_packages=none" "timezone=Etc/UTC"; do
+	got=$(python3 "$PMB_DIR/pmbootstrap.py" -p "$APORTS" config "${kv%%=*}" 2>/dev/null | tail -n 1)
+	[ "$got" = "${kv#*=}" ] || {
+		tail -n 40 "$OUT.init.log"; cat "$CFG"
+		die "pmbootstrap config ${kv%%=*} is '$got', expected '${kv#*=}'"; }
 done
 
 PKG="$WORK/packages/edge/aarch64"
