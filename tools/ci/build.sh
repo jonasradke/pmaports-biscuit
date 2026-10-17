@@ -94,7 +94,12 @@ done
 
 PKG="$WORK/packages/edge/aarch64"
 version_of() {   # $1 package dir: pkgver-rpkgrel from its APKBUILD
-	( . "$1/APKBUILD" >/dev/null 2>&1; echo "$pkgver-r$pkgrel" )
+	# Read, not sourced: an APKBUILD's top-level code is not meant to run
+	# outside abuild, and an error in a sourced file ends a POSIX shell.
+	_v=$(sed -n 's/^pkgver=["'\'']\{0,1\}\([^"'\'' ]*\).*/\1/p' "$1/APKBUILD" | head -n 1)
+	_r=$(sed -n 's/^pkgrel=\([0-9]*\).*/\1/p' "$1/APKBUILD" | head -n 1)
+	[ -n "$_v" ] && [ -n "$_r" ] || die "no pkgver/pkgrel in $1/APKBUILD"
+	echo "$_v-r$_r"
 }
 
 build() {   # $1 package, $2.. extra flags
