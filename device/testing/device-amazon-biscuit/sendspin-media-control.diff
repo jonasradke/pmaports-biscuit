@@ -1,0 +1,260 @@
+Let the Echo's action button skip tracks.
+
+The daemon already holds the controller role, so it can send Music
+Assistant the same play, pause, next and previous a Sendspin remote
+sends - it just had no way to be asked. This gives it a root-only
+datagram socket, /run/sendspin-control: one command word per datagram
+(play, pause, stop, next, previous, or toggle, which picks play or
+pause from the playback state the server last reported). biscuit-va-leds
+writes to it when a button gesture is bound to a media action.
+
+Previous always goes back a track. Music Assistant restarts the current
+track instead once it is 5 s in - too short to hit with a button - so
+the daemon follows the track position from the server's metadata and,
+past that point, sends previous twice: the first restarts the track and
+zeroes its elapsed time at once, the second steps back, and the server's
+one-second debounce plays only the result.
+A new track that arrives without fresh progress drops the old position
+rather than extrapolate it, and a reconnect forgets the last session's
+position and playback state.
+
+A socket that fails to open only logs: the speaker keeps playing.
+
+--- a/sendspin/daemon/daemon.py
++++ b/sendspin/daemon/daemon.py
+@@ -5,7 +5,10 @@
+ import asyncio
+ import contextlib
+ import logging
++import os
+ import signal
++import socket
++import time
+ from dataclasses import dataclass
+ from collections.abc import Callable
+ from typing import TYPE_CHECKING
+@@ -17,12 +20,14 @@
+     ClientHelloVisualizerSupport,
+ )
+ import biscuit_sendspin_viz
+-from aiosendspin.models.core import GroupUpdateServerPayload, ServerCommandPayload
++from aiosendspin.models.core import GroupUpdateServerPayload, ServerCommandPayload, ServerStatePayload
++from aiosendspin.models.metadata import Progress
+ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
+ from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
+ from aiosendspin.models.types import (
+     ConnectionReason,
+     GoodbyeReason,
++    MediaCommand,
+     PlaybackStateType,
+     PlayerCommand,
+     Roles,
+@@ -39,6 +44,30 @@
+ 
+ logger = logging.getLogger(__name__)
+ 
++# Playback control from the device itself - the Echo's action button. A
++# datagram per command, root-only, because everything that sends one runs on
++# this device as root and there is nothing to answer: the result shows up as
++# Music Assistant's own state change. The daemon already holds the controller
++# role, so a command here is exactly what a Sendspin remote would send.
++CONTROL_SOCKET = "/run/sendspin-control"
++CONTROL_COMMANDS = {
++    "play": MediaCommand.PLAY,
++    "pause": MediaCommand.PAUSE,
++    "stop": MediaCommand.STOP,
++    "next": MediaCommand.NEXT,
++    "previous": MediaCommand.PREVIOUS,
++}
++
++# Music Assistant's PREVIOUS restarts the track once it is 5 s in and only
++# goes back before that - too short to hit with a button, so pressing back
++# mostly restarted the song. A PREVIOUS also sets the queue's elapsed time to
++# 0 straight away and debounces the actual playback by a second, so past 5 s
++# two in a row land exactly one track back. Under the lower bound one is sent,
++# over the upper two; in between the daemon waits until the track is surely
++# past 5 s rather than guess which side of it the server is on.
++PREVIOUS_RESTARTS_AFTER_S = (4.5, 5.5)
++PREVIOUS_GAP_S = 0.2
++
+ 
+ @dataclass
+ class DaemonArgs:
+@@ -86,6 +115,17 @@
+         self._server_url: str | None = None
+         self._group_update_unsubscribe: Callable[[], None] | None = None
+         self._server_command_unsubscribe: Callable[[], None] | None = None
++        # Last playback state the server reported for our group, so "toggle"
++        # on the control socket can pick play or pause. Group updates are
++        # deltas: a None field means unchanged, not unknown.
++        self._playback_state: PlaybackStateType | None = None
++        self._control: asyncio.DatagramTransport | None = None
++        # (track progress ms, speed x1000, monotonic time received), from the
++        # server's metadata; None when the server reports no progress.
++        self._progress: tuple[int, int, float] | None = None
++        # Title, artist and album as last reported, merged across updates.
++        self._track: dict[str, str | None] = {}
++        self._metadata_unsubscribe: Callable[[], None] | None = None
+ 
+     def _create_client(self) -> SendspinClient:
+         """Create a new SendspinClient instance."""
+@@ -168,6 +208,7 @@
+         )
+         await self._audio_handler.read_initial_volume()
+         await self._audio_handler.start_volume_monitor()
++        await self._start_control()
+ 
+         try:
+             if self._args.url is not None:
+@@ -179,6 +220,9 @@
+         except asyncio.CancelledError:
+             logger.debug("Daemon cancelled")
+         finally:
++            if self._control is not None:
++                self._control.close()
++                self._control = None
+             if self._mpris is not None:
+                 self._mpris.stop()
+                 self._mpris = None
+@@ -245,6 +289,7 @@
+             self._handle_server_command
+         )
+         self._group_update_unsubscribe = client.add_group_update_listener(self._on_group_update)
++        self._metadata_unsubscribe = client.add_metadata_listener(self._on_metadata)
+         if MPRIS_AVAILABLE and self._args.use_mpris:
+             self._mpris = SendspinMpris(client)
+             self._mpris.start()
+@@ -257,6 +302,14 @@
+         if self._group_update_unsubscribe is not None:
+             self._group_update_unsubscribe()
+             self._group_update_unsubscribe = None
++        if self._metadata_unsubscribe is not None:
++            self._metadata_unsubscribe()
++            self._metadata_unsubscribe = None
++        # Both describe the session that just ended; a reconnect starts
++        # from what the server reports next, not from them.
++        self._progress = None
++        self._track = {}
++        self._playback_state = None
+         if self._mpris is not None:
+             self._mpris.stop()
+             self._mpris = None
+@@ -300,6 +353,8 @@
+ 
+     def _on_group_update(self, payload: GroupUpdateServerPayload) -> None:
+         """Track last played server for multi-server arbitration."""
++        if payload.playback_state is not None:
++            self._playback_state = payload.playback_state
+         if payload.playback_state != PlaybackStateType.PLAYING:
+             return
+         if self._client is None or self._client.server_info is None:
+@@ -417,6 +472,95 @@
+                 logger.exception("Unexpected error during connection")
+                 break
+ 
++    def _on_metadata(self, payload: ServerStatePayload) -> None:
++        """Remember track progress. An absent field means unchanged."""
++        meta = payload.metadata
++        if meta is None:
++            return
++        # A new track without fresh progress leaves the old track's position
++        # behind, and extrapolating it would make previous go back two
++        # tracks. Forget it: one previous at worst restarts the new track.
++        track = dict(self._track)
++        for name in ("title", "artist", "album"):
++            value = getattr(meta, name, None)
++            if value is None or isinstance(value, str):   # else: not in this update
++                track[name] = value
++        if self._track and track != self._track:
++            self._progress = None
++        self._track = track
++        if isinstance(meta.progress, Progress):
++            p = meta.progress
++            self._progress = (p.track_progress, p.playback_speed, time.monotonic())
++        elif meta.progress is None:
++            self._progress = None
++
++    def _elapsed_s(self) -> float | None:
++        """Where the current track is now, by the server's last report."""
++        if self._progress is None:
++            return None
++        ms, speed, at = self._progress
++        return (ms + (time.monotonic() - at) * speed) / 1000
++
++    async def _start_control(self) -> None:
++        """Listen on CONTROL_SOCKET for playback commands from this device.
++
++        A failure here must not stop the player: the button loses track
++        skipping, the speaker keeps playing.
++        """
++        loop = asyncio.get_running_loop()
++        with contextlib.suppress(FileNotFoundError):
++            os.unlink(CONTROL_SOCKET)
++        try:
++            self._control, _ = await loop.create_datagram_endpoint(
++                lambda: _ControlProtocol(self._on_control),
++                local_addr=CONTROL_SOCKET,
++                family=socket.AF_UNIX,
++            )
++            os.chmod(CONTROL_SOCKET, 0o600)
++        except OSError as err:
++            logger.warning("No playback control socket at %s: %s", CONTROL_SOCKET, err)
++
++    def _on_control(self, word: str) -> None:
++        """Send one control-socket command to the server as a group command."""
++        if word == "toggle":
++            word = "pause" if self._playback_state == PlaybackStateType.PLAYING else "play"
++        command = CONTROL_COMMANDS.get(word)
++        if command is None:
++            logger.warning("Unknown playback control command %r", word)
++            return
++        client = self._client
++        if client is None or not client.connected:
++            logger.info("Playback control %s ignored: not connected", word)
++            return
++        if command == MediaCommand.PREVIOUS:
++            create_task(self._send_previous(client))
++            return
++        logger.info("Playback control: %s", word)
++        create_task(self._send_control(client, command))
++
++    async def _send_previous(self, client: SendspinClient) -> None:
++        """Go back one track, whatever the position in the current one."""
++        low, high = PREVIOUS_RESTARTS_AFTER_S
++        elapsed = self._elapsed_s()
++        if elapsed is not None and low <= elapsed < high:
++            await asyncio.sleep(high - elapsed)
++            elapsed = self._elapsed_s()
++        twice = elapsed is not None and elapsed >= high
++        logger.info("Playback control: previous at %s s%s",
++                    "?" if elapsed is None else "%.1f" % elapsed,
++                    " (restart, then back)" if twice else "")
++        await self._send_control(client, MediaCommand.PREVIOUS)
++        if twice:
++            await asyncio.sleep(PREVIOUS_GAP_S)
++            await self._send_control(client, MediaCommand.PREVIOUS)
++
++    @staticmethod
++    async def _send_control(client: SendspinClient, command: MediaCommand) -> None:
++        try:
++            await client.send_group_command(command)
++        except Exception as err:  # noqa: BLE001 - a lost command must not kill the daemon
++            logger.warning("Playback control %s failed: %s", command.value, err)
++
+     def _handle_server_command(self, payload: ServerCommandPayload) -> None:
+         """Handle server commands for player volume/mute control."""
+         if payload.player is None or self._settings is None:
+@@ -475,3 +619,13 @@
+                 client_name=self._args.client_name,
+             )
+         )
++
++
++class _ControlProtocol(asyncio.DatagramProtocol):
++    """One datagram, one command word."""
++
++    def __init__(self, on_command: Callable[[str], None]) -> None:
++        self._on_command = on_command
++
++    def datagram_received(self, data: bytes, addr: object) -> None:
++        self._on_command(data.decode("ascii", "replace").strip().lower())

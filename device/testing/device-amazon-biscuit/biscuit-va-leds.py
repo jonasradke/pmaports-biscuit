@@ -154,18 +154,20 @@ GESTURE_EPS = 0.002
 # What a gesture can be bound to. The value is what this agent does LOCALLY;
 # every gesture also reports itself to Home Assistant regardless, so an
 # automation can react to any of them even when the local action is "Nothing".
-# Only commands the peripheral API actually implements. There is deliberately
-# no "next track" or "previous track": the API has no such command, and an
-# option that silently does nothing is worse than not offering it. Track
-# skipping belongs in a Home Assistant automation on the button event, which
-# fires for every gesture regardless of the local action.
+# Each value is a peripheral-API command or one of the local actions in
+# fire_gesture(). The media ones reach the music that is actually playing - see
+# MEDIA_CONTROL - and not only the assistant's own player: that player is
+# what Home Assistant's media_player entity for the assistant drives, while
+# Music Assistant plays through sendspin, so the old "Pause media", which went
+# only to the assistant, left the music running.
 BUTTON_ACTIONS = {
     "Nothing":                  None,
     "Start listening":          "start_listening",
     "Stop":                     "stop_pipeline",
     "Toggle microphone mute":   "toggle_mute",
-    "Pause media":              "pause_media_player",
-    "Resume media":             "resume_media_player",
+    "Play/pause":               "media_toggle",
+    "Next track":               "media_next",
+    "Previous track":           "media_previous",
     "Stop media":               "stop_media_player",
     "Volume up":                "volume_up",
     "Volume down":              "volume_down",
@@ -174,9 +176,16 @@ BUTTON_ACTIONS = {
 }
 BUTTON_ACTION_LABELS = list(BUTTON_ACTIONS)
 
+# Actions that were folded into another. A saved gesture keeps working rather
+# than silently falling back to its default.
+BUTTON_ACTION_RENAMED = {
+    "Pause media":  "Play/pause",
+    "Resume media": "Play/pause",
+}
+
 BUTTON_GESTURES = [
     ("single", "Single press", "Start listening"),
-    ("double", "Double press", "Pause media"),
+    ("double", "Double press", "Play/pause"),
     ("triple", "Triple press", "Nothing"),
     ("long",   "Press and hold", "Bluetooth pairing"),
 ]
@@ -1844,6 +1853,7 @@ def load_buttons():
             user = json.load(f)
         if isinstance(user, dict):
             for k, v in user.items():
+                v = BUTTON_ACTION_RENAMED.get(v, v)
                 if k in cfg and v in BUTTON_ACTIONS:
                     cfg[k] = v
     except FileNotFoundError:
@@ -2001,6 +2011,117 @@ async def watch_action_button(ws):
         os.close(fd)
 
 
+# MEDIA CONTROL FROM THE BUTTON
+#
+# Two things can be playing music on this speaker, and the button has to steer
+# whichever one it is:
+#
+#   - Music Assistant, through sendspin. The sendspin daemon holds the
+#     controller role, and sendspin-media-control.diff gives it a root-only
+#     datagram socket that turns a word into the group command a Sendspin
+#     remote would send. Play and pause it decides itself, from the state the
+#     server last reported.
+#   - A phone over Bluetooth (A2DP into bluealsa). bluez exposes the phone's
+#     AVRCP target as org.bluez.MediaPlayer1, which has Play, Pause, Next and
+#     Previous, and reports its own Status.
+#
+# The phone wins while it is playing: the speaker is then playing the phone,
+# and skipping a Music Assistant queue nobody is listening to would be wrong.
+# Otherwise Music Assistant. One exception keeps play/pause symmetrical: if the
+# button itself just paused the phone, the next press resumes the phone, not
+# Music Assistant - a paused phone reports "paused", not "playing", and would
+# otherwise lose the second press.
+SENDSPIN_CONTROL = "/run/sendspin-control"
+BT_RESUME_WINDOW_S = 30 * 60
+DBUS_TIMEOUT_S = 3
+# Finding the phone's player walks bluez's whole object tree - a dbus-send per
+# press, before Music Assistant is even asked. A player found is kept and only
+# its Status is read; "no phone" is believed for BT_SCAN_S, so a run of presses
+# with no phone costs one walk.
+BT_SCAN_S = 10.0
+_BT_PLAYER_RE = re.compile(r'object path "(/org/bluez/hci\d+/dev_[0-9A-F_]+/player\d+)"')
+_media = {"bt_paused_at": None, "bt_path": None, "bt_scanned": None}
+
+
+def _dbus(*args):
+    """dbus-send on the system bus; stdout, or None on any failure.
+
+    Bounded, because dbus-send waits for a stalled bluetoothd indefinitely.
+    """
+    try:
+        r = subprocess.run(
+            ["dbus-send", "--system", "--print-reply", "--dest=org.bluez",
+             "--reply-timeout=%d" % (DBUS_TIMEOUT_S * 1000)] + list(args),
+            capture_output=True, text=True, timeout=DBUS_TIMEOUT_S + 1)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _bt_status(path):
+    out = _dbus(path, "org.freedesktop.DBus.Properties.Get",
+                "string:org.bluez.MediaPlayer1", "string:Status")
+    m = re.search(r'string "(\w+)"', out or "")
+    return m.group(1) if m else None
+
+
+def bt_player():
+    """(object path, status) of a connected phone's AVRCP player, or None."""
+    path = _media["bt_path"]
+    if path is not None:
+        status = _bt_status(path)
+        if status is not None:
+            return path, status
+        _media["bt_path"] = None          # gone: the phone disconnected
+    scanned = _media["bt_scanned"]
+    if scanned is not None and time.monotonic() - scanned < BT_SCAN_S:
+        return None
+    _media["bt_scanned"] = time.monotonic()
+    out = _dbus("/", "org.freedesktop.DBus.ObjectManager.GetManagedObjects")
+    for path in _BT_PLAYER_RE.findall(out or ""):
+        status = _bt_status(path)
+        if status is not None:
+            _media["bt_path"] = path
+            return path, status
+    return None
+
+
+def sendspin_control(word):
+    import socket
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        s.sendto(word.encode(), SENDSPIN_CONTROL)
+    finally:
+        s.close()
+
+
+def media_control(word):
+    """toggle, stop, next or previous - to whatever is playing.
+
+    Blocking (dbus-send), so the caller runs it off the event loop.
+    """
+    player = bt_player()
+    status = player[1] if player else None
+    paused_by_us = (_media["bt_paused_at"] is not None
+                    and time.monotonic() - _media["bt_paused_at"] < BT_RESUME_WINDOW_S)
+    phone = status == "playing" or (status == "paused" and paused_by_us
+                                    and word == "toggle")
+    if phone:
+        if word == "toggle":
+            word = "pause" if status == "playing" else "play"
+        method = {"play": "Play", "pause": "Pause", "stop": "Stop",
+                  "next": "Next", "previous": "Previous"}[word]
+        _LOGGER.info("media: %s -> Bluetooth %s", word, player[0])
+        _dbus(player[0], "org.bluez.MediaPlayer1." + method)
+        _media["bt_paused_at"] = time.monotonic() if word == "pause" else None
+        return
+    _LOGGER.info("media: %s -> Music Assistant", word)
+    try:
+        sendspin_control(word)
+    except OSError as err:
+        _LOGGER.warning("sendspin control unavailable: %s", err)
+
+
 async def fire_gesture(ws, gesture):
     """Report the gesture to Home Assistant, then do the chosen local action.
 
@@ -2046,6 +2167,22 @@ async def fire_gesture(ws, gesture):
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("action %s failed: %s", action, err)
         return
+    # Media actions go to the music that is playing (media_control). Stop also
+    # goes on to the assistant's own player below, which is what plays media
+    # Home Assistant sends to its entity.
+    media = {
+        "media_toggle": "toggle",
+        "media_next": "next",
+        "media_previous": "previous",
+        "stop_media_player": "stop",
+    }
+    if action in media:
+        try:
+            await asyncio.to_thread(media_control, media[action])
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("action %s failed: %s", action, err)
+        if action.startswith("media_"):
+            return
     try:
         await ws.send(json.dumps({"command": action}))
     except Exception as err:  # noqa: BLE001
