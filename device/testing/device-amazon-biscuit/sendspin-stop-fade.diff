@@ -15,6 +15,10 @@ other way round, output going from silence to sound - a track start, a
 resume - is ramped up over 10 ms. Silence for that purpose is 32 zero
 frames, so music crossing zero on both channels does not dip.
 
+The last frame survives clear() for that fade, so a format change drops
+it when its size no longer fits: a sync insert would otherwise write an
+old-size frame into the new stream's buffer.
+
 --- a/sendspin/audio.py
 +++ b/sendspin/audio.py
 @@ -11,6 +11,7 @@
@@ -39,7 +43,19 @@ frames, so music crossing zero on both channels does not dip.
          self._first_real_chunk = True  # Flag to initialize timing from first chunk
  
          self._volume: int = 100  # 0-100 range
-@@ -365,6 +373,12 @@
+@@ -259,6 +267,11 @@
+         # Reset state on format change
+         self._stream_started = False
+         self._first_real_chunk = True
++        # clear() keeps the last frame for the fade out, but it is only
++        # meaningful at its own frame size: a sync insert would write an
++        # old-size frame into a buffer of the new one.
++        if len(self._last_output_frame) != pcm_format.frame_size:
++            self._last_output_frame = b""
+ 
+         # Low latency settings for accurate playback (chunks arrive 5+ seconds early)
+         self._stream = sounddevice.RawOutputStream(
+@@ -365,6 +378,12 @@
          self._stream_started = False
          stream = self._stream
          if stream is not None:
@@ -52,7 +68,7 @@ frames, so music crossing zero on both channels does not dip.
              self._stream_executor.submit(self._call_stream, stream.stop)
  
          # Drain all queued chunks
-@@ -398,7 +412,7 @@
+@@ -398,7 +417,7 @@
          self._drop_every_n_frames = 0
          self._frames_until_next_insert = 0
          self._frames_until_next_drop = 0
@@ -61,7 +77,7 @@ frames, so music crossing zero on both channels does not dip.
          self._sync_error_filter.reset()
          self._sync_error_filtered_us = 0.0
          self._last_reanchor_loop_time_us = 0
-@@ -541,9 +555,11 @@
+@@ -541,9 +560,11 @@
                                  _ = self._read_one_input_frame()
                                  replacement_frame = self._read_one_input_frame()
                                  if replacement_frame is None:
@@ -76,7 +92,7 @@ frames, so music crossing zero on both channels does not dip.
                                  drop_counter = drop_every_n
                                  self._frames_dropped_since_log += 1
                                  output_buffer[bytes_written : bytes_written + frame_size] = (
-@@ -581,6 +597,8 @@
+@@ -581,6 +602,8 @@
              self._current_chunk = None
              self._current_chunk_offset = 0
  
@@ -85,7 +101,7 @@ frames, so music crossing zero on both channels does not dip.
          # Apply volume scaling to the output
          self._apply_volume(output_buffer)
  
-@@ -701,9 +719,16 @@
+@@ -701,9 +724,16 @@
                  try:
                      self._initialize_current_chunk()
                  except queue.Empty:
@@ -105,7 +121,7 @@ frames, so music crossing zero on both channels does not dip.
                      break
  
              # Calculate how much we can read from current chunk
-@@ -732,9 +757,92 @@
+@@ -732,9 +762,92 @@
          # repeat silence, not the last real sample, or every correction
          # event writes that sample into the silence as a click.
          self._last_output_frame = bytes(result[-frame_size:])
