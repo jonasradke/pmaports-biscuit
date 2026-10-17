@@ -71,9 +71,13 @@ LABEL=biscuit-opt
 # read as the owner's choice. (The image itself carries no feed line - it is
 # built with pmbootstrap's default mirrors and only this service adds it - so
 # that is belt and braces.) A settings reset writes "on" (apply_reset).
-FEED_URL=https://liamtw22.github.io/biscuit-apk/edge
-FEED_KEY_SRC=/usr/share/biscuit/biscuit-apk.rsa.pub
-FEED_KEY_DST=/etc/apk/keys/biscuit-apk.rsa.pub
+FEED_URL=https://jonasradke.github.io/pmaports-biscuit/edge
+# The upstream project's feed, which this fork's devices used before. Its line
+# is retired (see retire_upstream_feed): left in place, an upstream build with
+# a higher pkgrel would replace this fork's packages on the next update.
+UPSTREAM_FEED_URL=https://liamtw22.github.io/biscuit-apk/edge
+FEED_KEY_SRC=/usr/share/biscuit/biscuit-apk-jr.rsa.pub
+FEED_KEY_DST=/etc/apk/keys/biscuit-apk-jr.rsa.pub
 FEED_FLAG=$STORE/persist/update-feed
 # Overridable only so a test harness can point them at copies.
 : "${APK_REPOSITORIES:=/etc/apk/repositories}"
@@ -347,6 +351,26 @@ _feed_mark_off() {
 	mkdir -p "${FEED_OFF_MARK%/*}" 2>/dev/null
 	: > "$FEED_OFF_MARK" 2>/dev/null ||
 		ewarn "could not write $FEED_OFF_MARK; uncommenting the feed line will not turn it back on"
+}
+
+# Remove the upstream feed's active line, once, keeping everything else. A
+# commented-out copy is left alone, and the owner's on/off choice carries over
+# to this fork's line through apply_feed_choice, which runs next.
+#
+# FEED_URL is switched and put back by hand: whether a "VAR=x func" prefix
+# outlives the call differs between shells, and a leaked upstream URL would make
+# apply_feed_choice put the upstream line straight back.
+retire_upstream_feed() {
+	[ -f "$APK_REPOSITORIES" ] || return 0
+	_fork_feed=$FEED_URL _retired=
+	FEED_URL=$UPSTREAM_FEED_URL
+	if feed_line_state; then
+		_feed_rewrite drop && _retired=1
+	fi
+	FEED_URL=$_fork_feed
+	[ -n "${_retired:-}" ] &&
+		einfo "retired the upstream package feed; updates come from $FEED_URL"
+	return 0
 }
 
 apply_feed_choice() {
@@ -673,6 +697,7 @@ rc_autostart_user="NO"
 		cp "$FEED_KEY_SRC" "$FEED_KEY_DST" &&
 			einfo "restored the package feed signing key"
 	fi
+	retire_upstream_feed
 	apply_feed_choice
 
 	eend 0

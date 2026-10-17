@@ -90,7 +90,7 @@ WORLD=$BISCUIT_APK_WORLD
 # This Echo's own package feed, as biscuit-persist writes its line into the
 # repositories file (FEED_URL there). The apps and the device's own updates come
 # only from it; everything else is postmarketOS's and Alpine's.
-FEED_MATCH=/biscuit-apk/
+FEED_MATCH=jonasradke.github.io/pmaports-biscuit/
 
 # Seconds any apk call that changes the database waits for another apk's lock.
 APK_WAIT=600

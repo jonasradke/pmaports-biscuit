@@ -350,7 +350,36 @@ which names the exact Alpine packages it was built with. BusyBox is Alpine's
 names the package and the aports commit it was built from, and the release
 carries its complete source.
 
-## 7. Publishing (maintainers)
+## Continuous integration (the jonasradke fork)
+
+`.github/workflows/build.yml` runs everything above on GitHub Actions, through
+[`tools/ci/build.sh`](tools/ci/build.sh), which can also be run by hand on a
+Linux machine with sudo:
+
+- every push to `echo-build` builds bluez-alsa, boot-deploy and the device
+  packages, as a check, and keeps them as a workflow artifact;
+- running the workflow by hand with **full** also builds the kernel, the image
+  and the TWRP zips;
+- pushing a tag that matches `v*-jr` and the APKBUILD's `_release` builds
+  everything, tags the commit `rNNN`, publishes the GitHub release with the
+  zips, the packages and upstream's kernel and BusyBox source bundles, and
+  deploys the signed feed to GitHub Pages at
+  `https://jonasradke.github.io/pmaports-biscuit/edge`.
+
+To cut a release: set `pkgrel` and `_release` in the device APKBUILD, record
+the name in `installer/zip/releases.json`, push, then tag and push the tag:
+
+```sh
+git tag v1.2-jr && git push origin v1.2-jr
+```
+
+The feed is signed with the `APK_SIGNING_KEY` repository secret, the private
+half of `device/testing/device-amazon-biscuit/biscuit-apk-jr.rsa.pub`; the
+workflow refuses a secret that does not match it. An Echo moved over from
+upstream's feed has that line retired by `biscuit-persist`, so an upstream
+build can never replace the fork's.
+
+## 7. Publishing (upstream maintainers)
 
 Releases are published in this order, because the optional apps pin the exact
 core version and an install from an older feed would downgrade the core:

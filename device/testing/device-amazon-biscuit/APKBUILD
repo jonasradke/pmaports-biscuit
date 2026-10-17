@@ -1,17 +1,19 @@
 # Reference: <https://postmarketos.org/devicepkg>
-maintainer="liamtw22 <31185529+liamtw22@users.noreply.github.com>"
+maintainer="jonasradke <me@jonasradke.com>"
 pkgname=device-amazon-biscuit
 pkgdesc="Amazon Echo Dot (2nd gen)"
 pkgver=6
-pkgrel=295
+pkgrel=299
 # The public release this build is: the name on the release page, the install
 # zip and the settings page. pkgrel is the build and keeps counting, because
 # apk orders upgrades by it and a release name like 1.0 would sort below the
 # 6-r2xx builds already installed. Each public build gets a new name - v1.0.1
 # for fixes, v1.1 for features - and the installer refuses a name already
 # given to another build (installer/zip/releases.json).
-_release="v1.0"
-url="https://github.com/liamtw22/pmaports-biscuit"
+# Releases of the jonasradke fork carry a "-jr" suffix, so they can never be
+# mistaken for, or collide with, an upstream release of the same number.
+_release="v1.1-jr"
+url="https://github.com/jonasradke/pmaports-biscuit"
 # Core is our own code (MIT) plus two vendored pieces that keep their own
 # licences: TweetNaCl-js (public domain, Unlicense) for the setup and settings
 # pages, and aioesphomeapi's two generated protobuf modules (MIT) for the
@@ -264,7 +266,7 @@ source="
 	biscuit_call_profile.py
 	biscuit-mic-direct.sh
 	biscuit-beam-weights.bin
-	biscuit-apk.rsa.pub
+	biscuit-apk-jr.rsa.pub
 	biscuit-beam-weights-stock.bin
 	interfaces
 	wlan-defer.conf
@@ -944,8 +946,8 @@ package() {
 	# The package feed's PUBLIC key. Shipped so biscuit-persist can put it
 	# back into /etc/apk/keys after a flash, which replaces the rootfs and
 	# would otherwise leave the device unable to verify its own updates.
-	install -Dm644 "$srcdir"/biscuit-apk.rsa.pub \
-		"$pkgdir"/usr/share/biscuit/biscuit-apk.rsa.pub
+	install -Dm644 "$srcdir"/biscuit-apk-jr.rsa.pub \
+		"$pkgdir"/usr/share/biscuit/biscuit-apk-jr.rsa.pub
 	# Empties apk's package cache after every transaction. apk-tools 3
 	# predownloads each package into /var/cache/apk and keeps it, which had
 	# filled 1.2 GB of the 3.1 GB root by r271; see the hook itself.
@@ -1468,7 +1470,7 @@ ecc635a8ff8c16d6e4ee58478db7ed34b387094210d464100f2bc289bf584d34cb54358497a7a3c7
 739247a7d0dce42b86b18c37cb3d3b17650cf096474ad8502fd3c21371fc2b1c8d881244735174f3dbb5f817520e7f6f16c1a367646700e942a47ae9816ec150  biscuit-tick.c
 adf094d4b4b203bcff1cce17d28b8acb678b0b07faf831f247d241ad67cd4346500bc4a582a5d25a3bdfa7948a72fc16e48c20af4de97e93297787a74818d0ca  biscuit-mic-coeff.py
 e6cb7f91b733df58fbf3041d06f7b6ca681ae770abd6e3c0447dbc304a4f365a4af2dfc3ec10600bef8ac8b5a7400b05d8bd336498fddb4ae3905c10d8e61c98  biscuit-mic-coeff.initd
-fa3f1469db6d0b7077d29208217353a5ebe7bc28337f4960527ae0416c411b4b61cf00c2d15b275b245ebf858cf6fb4737fdf88f5726225af1a06afa6c337cfd  biscuit-persist.initd
+0a03710d20e211b61c0730b13959fbd29649d5827d48df53c9b70fc06b58ece98c9daa91d7dfa82bf04205b7fb505c65ee4416db3eb7e6d062664d497c0699bb  biscuit-persist.initd
 ad6aa6f4f69a90cb77a6a2586b58f34c1b46f706ec8988507bce6bfd27687c42588b9389d5107fc36b37d5ccc7fc19812bd875f694ab1261d76a7564f15d312b  biscuit-persist-account
 bd9146e4a867ba6b47c7bae345cd44868bdacccbaaceb1cd58bee02daa5970f027fb5891b4252ff657eb50c7cacb6127de33458fd627b611214d6a8dd0d103b3  biscuit-wheel-nopasswd
 7c5552ab4e158cfd1e34ef5991351c0d3f0439e60481055d5dcf73b2d306ebceea9078ef6d75f49726cd17d76f6f05a3656ae9eba0200d77034fd40d9307d909  biscuit-firstboot.initd
@@ -1481,9 +1483,9 @@ f32041c30ec81691184497ba3f1dcf1bd20666926eed245d525fcf21ffb382663f887d822b4a0639
 cf5f4d8aa741c6d35d193761f34765a000f1c5b4c56f32e30a6c609d8a2fd6c5aafa17099a1d54b9fea1cdfa945f0fdea797a59866a8a27a7c0e56a8d76cab3b  biscuit_eq.py
 1f6385167b06eede4834ef72cf1cfabd9097ab9ae7f9d1cd06ea717da693995774d29ce632d88c5cf589604e4c416f87ea11e7d77c6bb18f3c7d73a7cf00138b  biscuit-portal.py
 e59783b0829f5e2e2e055cbbec7d85b865c58208d5b99df21297395f4e59a1d14a1129dd07efb81d5a2f7c554393ec44d1e90b70277fe583dce8589b4e1eda1c  nacl-fast.min.js
-749332b60226859af8e8ad619be1d3e61755b9796af9716f6a8e18d95f76b8a9ad31418945f76de5b7351db9848a28f40eafc9d01a90f538b0e5d72755e9f3cd  biscuit-apps.json
+2bab9fa82607e90fae4822acf4562fa5401eda3a7a4937ae449c416287b4293d0cc6729dff8e31d96091688cbfcfb601a889cd19a51df55753dd8f3866d88dca  biscuit-apps.json
 bcbc4188cc5549e0f221727b59cc72a77b98e52cf4c80f4cd0b0c56a99ffbe1d08a58b1acf890af2f26b5da43486550622af3555137d8eaa6f92cb0572b9cfab  biscuit-reset.conf
-414a8695e830c0a0ef0e0fb0bba09b749e8bb89fe7ac8c7f3abe00a1259e00b7935817982d6bfe48872c003f7797f6447dae50c827c16629c768f21c60edf3a8  biscuit-pkgjob.sh
+f2da5c538522d502c4b226bfa457942f0b80754e061a3476d584850ef1c47a388dcf2260af90c7dc3626cfb3b822399ae6ab53623c454af8430d88704400bf09  biscuit-pkgjob.sh
 126132ea25d332c34213e11163f9a9589a928f754d70392d8d977c9baba4c27e6fef67cc9bd7e42df6361d15b606b60704e2f6130cc81191dd71b233ac609749  biscuit-boot-update
 daf9921acb046663b7f6b04f81fc3c8e77900922485e59f4f1473ecc555f4cd542825734c8e262a6616219f03070fbc22ca2095b8059808d6c5b69551a90328a  pair-session.sh
 80f7e76cab618ae6c963a652dc1be35421f1c083ac22317b7be57e7889c4213f8ddd3dde7889a584c6aa56527fecaa5348f3c4f5c9a8900e59e3adbb4e277437  device-amazon-biscuit.post-install
@@ -1530,7 +1532,7 @@ a6b11dbfa56a65e72c1e33ed8305e2408bc4246eada386b0bb8fc379480c3a071927f36265d5af8d
 241f75a2e118a174b38fd58e5485d7b0b8428b3f0188488ae0cf7666b4c0cedd8448e893fe38e596ec7bc09ec965e096d020523805edcbd95343b2fe109236e9  biscuit_call_profile.py
 a82293043e5387af990228a59ae5de28aa7a425e088f0f49898b9c19798ae714aee53f83d18fe0e2384302dba1833cbe8bc8031e3b3955b37639637a48526431  biscuit-mic-direct.sh
 aa95c3d416b73062178f9021112684cc00e2fcbf276d972d7067adc4c02d8e9f9bbef4ec75c7bfcb5fc6290c08afd08cb10fdf8e775181dc7e676c72c72da46b  biscuit-beam-weights.bin
-92ff0b771b5e6e79d36e37efc5e88c40571dd180cb19efc8a4fd784fd343c83e8b55ff2c12ec303825f540f114b50c75f4398751f83123fa1972f29f9a12d75e  biscuit-apk.rsa.pub
+83b044e00126361803561736999a89d34ad55d65fc7922e6b527d0d31ff98f0646f9576ca517f6d5c72558ecbc1861b5c50466c2ead792855fe2c2d565f71cfd  biscuit-apk-jr.rsa.pub
 e53d49b335da2e1255424392a03abbc7cd1b66cccd3cb3836a1c586e5725f08c91502a7e4fb92e59baa1d27a1326bc63aa39a7b819893cfdf64305c45623ceaf  biscuit-beam-weights-stock.bin
 47b4801580ab8cb964bd86e3a37aa96fd8840a3c764d1f6dfe0ec60fd36a979b5b84db060aebd9ca6e7564dcfe01e414242cc80e4bc0f0fd1faa5ca0bf2cdac4  interfaces
 a097a7ebfc11e0ec7723656ef1667e8e4e8b7ed307fd2ae11ff39aea26472a2529e4c45839926c0c9c5278d54e33deb7c07fc799452f0de0126cec5c693c4dee  wlan-defer.conf
@@ -1569,7 +1571,7 @@ f80fd53f8d6f4cc136b75f459fc3b9663d84415ef1f184e5614e4e0c07cc120c512f846950cfb560
 56b2e83867d1c9002392c8f2341c0ce67257aeff9619ec282abc7d7e5317b7e9f95043ab0a0b6cc789488889866b03583c9e85c0407f4559641188d713f93f22  biscuit-ring-fx.py
 ba08f5eabaa4ffcba25e7123c4def7ce3e6c574c9dffdefb31c88f54557ead9ffd8190c6fb28c60a6ea23f7bad89b626bc17af50cf3fe54d786cfe4ba6701910  biscuit_ring_config.py
 2865dc7fe8a445d15a7e8229df17a0be393cfbb42014fafd6cadd62d15b7407b64b89832d98d25dd139710e84577499c2ab2d23ce74e5c2baa5433059c465a9e  biscuit_services.py
-a366f374f71432afd6dab0fe62d4094f4c249a6b3e4c6bc70c2799872d294ad85a3ce6bf49eb6204b89277222bb796758e2baa05c9f794e0267317ad5b890ef6  biscuit_system.py
+2b170a17b5ca58fb1611e129b8ff6020ad3e686824f11b4b4cdc3124a75b43b53ddaaca543ec9bf5c3d4147974ed4c10d2cc56f56b0aca882a59f343c563a3a0  biscuit_system.py
 4ae58e73084c143f71c98fee94728cadc6150aaa648c897738bdf984bf66b22db6775dadcfc858463092692d33f73de88b4fa9eb0e5c04c6876f860ba28c12ae  biscuit-voice-assistant.initd
 7ab07f402e561ce4859c4a9415721570250a8a08fa931aa29ec08c48cfe9ef830623036abc8a0cefb967cab57a5856f9b39d808790b61b03829f3569a15dc4ce  biscuit-voice-assistant-wait.sh
 d76f7aa7a6accc715af222416a1f3eb31f25ba28a9a32394f96e7f041e2fffc01861f162b063ee42dce5500f35e4ef7510717b14e266361a740c0d08ddd376fb  biscuit-va-leds.initd

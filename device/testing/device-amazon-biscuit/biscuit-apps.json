@@ -10,7 +10,7 @@
     "`functions` says which services make up each thing the device does, for the Processes page; what those services need, which processes they run and which packages own them are all read from the device."
   ],
   "source": {
-    "repo": "https://github.com/liamtw22/pmaports-biscuit",
+    "repo": "https://github.com/jonasradke/pmaports-biscuit",
     "path": "device/testing/device-amazon-biscuit",
     "tag_prefix": "r"
   },

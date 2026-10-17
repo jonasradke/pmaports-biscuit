@@ -7,10 +7,10 @@ buttons.
 
 This is a community project. It is not affiliated with or endorsed by Amazon or
 postmarketOS. Report problems on the project's
-[GitHub issues](https://github.com/liamtw22/pmaports-biscuit/issues).
+[GitHub issues](https://github.com/jonasradke/pmaports-biscuit/issues).
 
 Everything runs from a computer through TWRP with four zips, published on the
-project's [GitHub releases](https://github.com/liamtw22/pmaports-biscuit/releases):
+project's [GitHub releases](https://github.com/jonasradke/pmaports-biscuit/releases):
 
 | Zip | What it does |
 |---|---|
@@ -217,7 +217,7 @@ section; it is off by default).
 
 An installed Echo is updated over the network; you do not need a new install
 zip. Updates come from postmarketOS and from this project's package feed,
-`https://liamtw22.github.io/biscuit-apk/edge`, which the Echo adds by itself.
+`https://jonasradke.github.io/pmaports-biscuit/edge`, which the Echo adds by itself.
 
 On the settings page, **System › Updates** shows what is installed, checks for
 updates and installs them.

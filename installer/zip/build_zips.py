@@ -246,7 +246,7 @@ def release_of(release_file, core_v):
         return None
     fields = dict(l.split("=", 1) for l in release_file.decode(errors="replace").splitlines() if "=" in l)
     name, build = fields.get("release", ""), fields.get("build", "")
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+(\.[0-9]+)?", name):
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?", name):
         sys.exit("%s names the release %r, not v<X.Y> or v<X.Y.Z>" % (RELEASE_IN_IMAGE, name))
     if build != core_v:
         sys.exit("%s is for %s, but the image carries %s %s" % (RELEASE_IN_IMAGE, build, CORE, core_v))
@@ -314,7 +314,7 @@ def main():
     a = ap.parse_args()
     if a.build and not re.fullmatch(r"r[0-9]+", a.build):
         sys.exit("--build is r<N>, as in r295")
-    if a.release and not re.fullmatch(r"v[0-9]+\.[0-9]+(\.[0-9]+)?", a.release):
+    if a.release and not re.fullmatch(r"v[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?", a.release):
         sys.exit("--release is v<X.Y> or v<X.Y.Z>, as in v1.0")
 
     build = core_v = release = None

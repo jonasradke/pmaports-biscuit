@@ -1,0 +1,155 @@
+# Builds the port with pmbootstrap (tools/ci/build.sh) and publishes the
+# jonasradke fork's releases.
+#
+#   push to echo-build       packages only, as a check; uploaded as an artifact
+#   workflow_dispatch        packages, or everything with "full"
+#   tag v*-jr (e.g. v1.1-jr) everything, then the GitHub release, the rNNN
+#                            build tag and the signed feed on GitHub Pages
+#
+# The feed is signed with the APK_SIGNING_KEY repository secret, the private
+# half of device/testing/device-amazon-biscuit/biscuit-apk-jr.rsa.pub.
+name: build
+
+on:
+  push:
+    branches: [echo-build]
+    tags: ["v*-jr"]
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Also build the kernel, the image and the TWRP zips"
+        type: boolean
+        default: false
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    outputs:
+      build: ${{ steps.meta.outputs.build }}
+      release: ${{ steps.meta.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release metadata
+        id: meta
+        run: |
+          eval "$(grep -E '^(pkgver|pkgrel|_release)=' device/testing/device-amazon-biscuit/APKBUILD)"
+          echo "build=r$pkgrel" >> "$GITHUB_OUTPUT"
+          echo "release=$_release" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "$_release" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} but the APKBUILD's _release is $_release"
+            exit 1
+          fi
+
+      - name: Free disk space
+        # pmbootstrap wants about 20 GB; the runner starts with ~14 GB free.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - name: Host packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zerofree e2fsprogs openssl
+          sudo modprobe loop || true
+
+      - name: Build
+        env:
+          MODE: ${{ (github.ref_type == 'tag' || inputs.full) && 'full' || 'packages' }}
+        run: sh tools/ci/build.sh "$MODE"
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: out/apk/*.apk
+          if-no-files-found: error
+
+      - name: Upload zips
+        if: github.ref_type == 'tag' || inputs.full
+        uses: actions/upload-artifact@v4
+        with:
+          name: zips
+          path: out/zips/*
+          if-no-files-found: error
+
+      - name: pmbootstrap log
+        if: failure()
+        run: sudo tail -n 300 ~/.local/var/pmbootstrap/log.txt || true
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Signed feed
+        env:
+          APK_SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: sh tools/ci/feed.sh dist/apk site
+
+      - name: Feed artifact for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Build tag
+        # The settings page links a build's source by its rNNN tag.
+        env:
+          BUILD: ${{ needs.build.outputs.build }}
+        run: |
+          git tag -f "$BUILD" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$BUILD"
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ needs.build.outputs.release }}
+          BUILD: ${{ needs.build.outputs.build }}
+        run: |
+          # The kernel and BusyBox are upstream's, unchanged: carry their
+          # corresponding source as upstream's release does (installer/NOTICE).
+          mkdir -p sources
+          gh release download v1.0 -R liamtw22/pmaports-biscuit -D sources \
+            -p 'linux-amazon-biscuit-*-source.tar.gz' -p 'busybox-*.tar.bz2' \
+            -p 'aports-main-busybox-*.tar.gz' -p 'busybox-static-*.apk'
+          cat > notes.md <<EOF
+          Build $BUILD of the [jonasradke fork](https://github.com/$GITHUB_REPOSITORY) of the
+          postmarketOS port for the Amazon Echo Dot 2. Install with the zips as
+          described in [INSTALL.md](https://github.com/$GITHUB_REPOSITORY/blob/$RELEASE/installer/INSTALL.md);
+          an installed Echo updates from the fork's feed,
+          https://jonasradke.github.io/pmaports-biscuit/edge.
+
+          Built by GitHub Actions from \`$GITHUB_SHA\`: [run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
+          EOF
+          gh release create "$RELEASE" --verify-tag --title "$RELEASE" --notes-file notes.md \
+            dist/zips/* dist/apk/*.apk sources/*
+
+  pages:
+    if: github.ref_type == 'tag'
+    needs: release
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

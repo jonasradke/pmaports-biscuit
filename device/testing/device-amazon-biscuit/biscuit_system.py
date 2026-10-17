@@ -143,7 +143,7 @@ def release():
         key, _, value = line.partition("=")
         fields[key.strip()] = value.strip()
     name, build = fields.get("release", ""), fields.get("build", "")
-    if not (re.fullmatch(r"v[0-9]+\.[0-9]+(\.[0-9]+)?", name) and re.fullmatch(r"[0-9][0-9.]*-r[0-9]+", build)):
+    if not (re.fullmatch(r"v[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?", name) and re.fullmatch(r"[0-9][0-9.]*-r[0-9]+", build)):
         return {"name": "", "build": ""}
     return {"name": name, "build": build}
 

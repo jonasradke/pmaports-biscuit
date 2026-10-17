@@ -10,6 +10,12 @@ Amazon account and no cloud service are involved.
 repartitioning it, and either can brick the device. Read [Requirements](#requirements)
 and the installation guide before starting.
 
+> **This is the jonasradke fork** of [liamtw22/pmaports-biscuit](https://github.com/liamtw22/pmaports-biscuit).
+> Its releases carry a `-jr` suffix (`v1.1-jr`), are built by GitHub Actions
+> (`.github/workflows/build.yml`), and an Echo installed from one updates from
+> the fork's own signed feed, `https://jonasradke.github.io/pmaports-biscuit/edge`. Changes made here are offered upstream as
+> pull requests.
+
 Not affiliated with Amazon. Echo and Alexa are trademarks of Amazon.com, Inc.
 or its affiliates.
 
@@ -83,7 +89,7 @@ or its affiliates.
 
 ## Installing
 
-Get the zips from the [latest release](https://github.com/liamtw22/pmaports-biscuit/releases)
+Get the zips from the [latest release](https://github.com/jonasradke/pmaports-biscuit/releases)
 and check them against its `SHA256SUMS`. Then follow the installation guide,
 [`installer/INSTALL.md`](installer/INSTALL.md). In short:
 
@@ -105,7 +111,7 @@ and check them against its `SHA256SUMS`. Then follow the installation guide,
 | `amazon-biscuit-stock-restore.zip` | Take the Echo back to the stock layout, ready for Fire OS 6 |
 
 **Updating:** the Echo checks this project's package feed
-(`https://liamtw22.github.io/biscuit-apk/edge`), which is on by default and
+(`https://jonasradke.github.io/pmaports-biscuit/edge`), which is on by default and
 put back on every boot unless you turn it off; the settings page's Updates
 section installs what it finds, including kernel and boot updates. To stop
 using the feed, or to turn it back on, see
