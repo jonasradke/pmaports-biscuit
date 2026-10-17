@@ -1207,7 +1207,8 @@ package() {
 	# Playback control from the action button: a root-only socket the daemon
 	# turns into Music Assistant group commands (next, previous, play/pause).
 	# Generated against the two daemon.py patches above, so it follows them.
-	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages 		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-media-control.diff )
+	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages \
+		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-media-control.diff )
 	# Apache-2.0 4(b): a file we changed says so, at the top where it is seen.
 	for _f in aiosendspin/models/controller.py aiosendspin/models/types.py \
 			sendspin/daemon/daemon.py; do
