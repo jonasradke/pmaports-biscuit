@@ -854,7 +854,7 @@ class VoiceSatelliteProtocol(APIServer):
     RUN_STALL_S = 45.0
 
     def _touch_run(self) -> None:
-        timer = threading.Timer(self.RUN_STALL_S, self._run_stalled)
+        timer = threading.Timer(self.RUN_STALL_S, lambda: self._on_run_watchdog(timer))
         timer.daemon = True
         old, self._run_watchdog = self._run_watchdog, timer
         if old is not None:
@@ -866,7 +866,22 @@ class VoiceSatelliteProtocol(APIServer):
         if old is not None:
             old.cancel()
 
-    def _run_stalled(self) -> None:
+    def _on_run_watchdog(self, timer: threading.Timer) -> None:
+        """Timer thread: hand the stall check to the event loop.
+
+        Every flag _run_stalled clears, and the duck and ring it drives, are
+        otherwise only touched on the loop; ending a run from the timer thread
+        raced a RUN_END or wake word arriving at the same moment. Without a
+        loop there is no connection, and the disconnect has ended the run.
+        """
+        loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(self._run_stalled, timer)
+
+    def _run_stalled(self, timer: threading.Timer) -> None:
+        # A run touched or ended since this timer fired has moved on.
+        if timer is not self._run_watchdog:
+            return
         if not self._pipeline_active or self._timer_finished:
             return
         if self.state.tts_player.is_playing:
