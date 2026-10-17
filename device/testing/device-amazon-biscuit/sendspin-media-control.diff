@@ -8,21 +8,37 @@ datagram socket, /run/sendspin-control: one command word per datagram
 pause from the playback state the server last reported). biscuit-va-leds
 writes to it when a button gesture is bound to a media action.
 
+Previous always goes back a track. Music Assistant restarts the current
+track instead once it is 5 s in - too short to hit with a button - so
+the daemon follows the track position from the server's metadata and,
+past that point, sends previous twice: the first restarts the track and
+zeroes its elapsed time at once, the second steps back, and the server's
+one-second debounce plays only the result.
+
 A socket that fails to open only logs: the speaker keeps playing.
 
 --- a/sendspin/daemon/daemon.py
 +++ b/sendspin/daemon/daemon.py
-@@ -5,7 +5,9 @@
+@@ -5,7 +5,10 @@
  import asyncio
  import contextlib
  import logging
 +import os
  import signal
 +import socket
++import time
  from dataclasses import dataclass
  from collections.abc import Callable
  from typing import TYPE_CHECKING
-@@ -23,6 +25,7 @@
+@@ -17,12 +20,14 @@
+     ClientHelloVisualizerSupport,
+ )
+ import biscuit_sendspin_viz
+-from aiosendspin.models.core import GroupUpdateServerPayload, ServerCommandPayload
++from aiosendspin.models.core import GroupUpdateServerPayload, ServerCommandPayload, ServerStatePayload
++from aiosendspin.models.metadata import Progress
+ from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
+ from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
  from aiosendspin.models.types import (
      ConnectionReason,
      GoodbyeReason,
@@ -30,7 +46,7 @@ A socket that fails to open only logs: the speaker keeps playing.
      PlaybackStateType,
      PlayerCommand,
      Roles,
-@@ -39,6 +42,20 @@
+@@ -39,6 +44,30 @@
  
  logger = logging.getLogger(__name__)
  
@@ -48,10 +64,20 @@ A socket that fails to open only logs: the speaker keeps playing.
 +    "previous": MediaCommand.PREVIOUS,
 +}
 +
++# Music Assistant's PREVIOUS restarts the track once it is 5 s in and only
++# goes back before that - too short to hit with a button, so pressing back
++# mostly restarted the song. A PREVIOUS also sets the queue's elapsed time to
++# 0 straight away and debounces the actual playback by a second, so past 5 s
++# two in a row land exactly one track back. Under the lower bound one is sent,
++# over the upper two; in between the daemon waits until the track is surely
++# past 5 s rather than guess which side of it the server is on.
++PREVIOUS_RESTARTS_AFTER_S = (4.5, 5.5)
++PREVIOUS_GAP_S = 0.2
++
  
  @dataclass
  class DaemonArgs:
-@@ -86,6 +103,11 @@
+@@ -86,6 +115,15 @@
          self._server_url: str | None = None
          self._group_update_unsubscribe: Callable[[], None] | None = None
          self._server_command_unsubscribe: Callable[[], None] | None = None
@@ -60,10 +86,14 @@ A socket that fails to open only logs: the speaker keeps playing.
 +        # deltas: a None field means unchanged, not unknown.
 +        self._playback_state: PlaybackStateType | None = None
 +        self._control: asyncio.DatagramTransport | None = None
++        # (track progress ms, speed x1000, monotonic time received), from the
++        # server's metadata; None when the server reports no progress.
++        self._progress: tuple[int, int, float] | None = None
++        self._metadata_unsubscribe: Callable[[], None] | None = None
  
      def _create_client(self) -> SendspinClient:
          """Create a new SendspinClient instance."""
-@@ -168,6 +190,7 @@
+@@ -168,6 +206,7 @@
          )
          await self._audio_handler.read_initial_volume()
          await self._audio_handler.start_volume_monitor()
@@ -71,7 +101,7 @@ A socket that fails to open only logs: the speaker keeps playing.
  
          try:
              if self._args.url is not None:
-@@ -179,6 +202,9 @@
+@@ -179,6 +218,9 @@
          except asyncio.CancelledError:
              logger.debug("Daemon cancelled")
          finally:
@@ -81,7 +111,26 @@ A socket that fails to open only logs: the speaker keeps playing.
              if self._mpris is not None:
                  self._mpris.stop()
                  self._mpris = None
-@@ -300,6 +326,8 @@
+@@ -245,6 +287,7 @@
+             self._handle_server_command
+         )
+         self._group_update_unsubscribe = client.add_group_update_listener(self._on_group_update)
++        self._metadata_unsubscribe = client.add_metadata_listener(self._on_metadata)
+         if MPRIS_AVAILABLE and self._args.use_mpris:
+             self._mpris = SendspinMpris(client)
+             self._mpris.start()
+@@ -257,6 +300,10 @@
+         if self._group_update_unsubscribe is not None:
+             self._group_update_unsubscribe()
+             self._group_update_unsubscribe = None
++        if self._metadata_unsubscribe is not None:
++            self._metadata_unsubscribe()
++            self._metadata_unsubscribe = None
++        self._progress = None
+         if self._mpris is not None:
+             self._mpris.stop()
+             self._mpris = None
+@@ -300,6 +347,8 @@
  
      def _on_group_update(self, payload: GroupUpdateServerPayload) -> None:
          """Track last played server for multi-server arbitration."""
@@ -90,10 +139,28 @@ A socket that fails to open only logs: the speaker keeps playing.
          if payload.playback_state != PlaybackStateType.PLAYING:
              return
          if self._client is None or self._client.server_info is None:
-@@ -417,6 +445,47 @@
+@@ -417,6 +466,84 @@
                  logger.exception("Unexpected error during connection")
                  break
  
++    def _on_metadata(self, payload: ServerStatePayload) -> None:
++        """Remember track progress. An absent field means unchanged."""
++        meta = payload.metadata
++        if meta is None:
++            return
++        if isinstance(meta.progress, Progress):
++            p = meta.progress
++            self._progress = (p.track_progress, p.playback_speed, time.monotonic())
++        elif meta.progress is None:
++            self._progress = None
++
++    def _elapsed_s(self) -> float | None:
++        """Where the current track is now, by the server's last report."""
++        if self._progress is None:
++            return None
++        ms, speed, at = self._progress
++        return (ms + (time.monotonic() - at) * speed) / 1000
++
 +    async def _start_control(self) -> None:
 +        """Listen on CONTROL_SOCKET for playback commands from this device.
 +
@@ -125,8 +192,27 @@ A socket that fails to open only logs: the speaker keeps playing.
 +        if client is None or not client.connected:
 +            logger.info("Playback control %s ignored: not connected", word)
 +            return
++        if command == MediaCommand.PREVIOUS:
++            create_task(self._send_previous(client))
++            return
 +        logger.info("Playback control: %s", word)
 +        create_task(self._send_control(client, command))
++
++    async def _send_previous(self, client: SendspinClient) -> None:
++        """Go back one track, whatever the position in the current one."""
++        low, high = PREVIOUS_RESTARTS_AFTER_S
++        elapsed = self._elapsed_s()
++        if elapsed is not None and low <= elapsed < high:
++            await asyncio.sleep(high - elapsed)
++            elapsed = self._elapsed_s()
++        twice = elapsed is not None and elapsed >= high
++        logger.info("Playback control: previous at %s s%s",
++                    "?" if elapsed is None else "%.1f" % elapsed,
++                    " (restart, then back)" if twice else "")
++        await self._send_control(client, MediaCommand.PREVIOUS)
++        if twice:
++            await asyncio.sleep(PREVIOUS_GAP_S)
++            await self._send_control(client, MediaCommand.PREVIOUS)
 +
 +    @staticmethod
 +    async def _send_control(client: SendspinClient, command: MediaCommand) -> None:
@@ -138,7 +224,7 @@ A socket that fails to open only logs: the speaker keeps playing.
      def _handle_server_command(self, payload: ServerCommandPayload) -> None:
          """Handle server commands for player volume/mute control."""
          if payload.player is None or self._settings is None:
-@@ -475,3 +544,13 @@
+@@ -475,3 +602,13 @@
                  client_name=self._args.client_name,
              )
          )

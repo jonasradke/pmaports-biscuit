@@ -157,8 +157,8 @@ GESTURE_EPS = 0.002
 # fire_gesture(). The media ones reach the music that is actually playing - see
 # MEDIA_CONTROL - and not only the assistant's own player: that player is
 # what Home Assistant's media_player entity for the assistant drives, while
-# Music Assistant plays through sendspin, so a "Pause media" that went only to
-# the assistant left the music running.
+# Music Assistant plays through sendspin, so the old "Pause media", which went
+# only to the assistant, left the music running.
 BUTTON_ACTIONS = {
     "Nothing":                  None,
     "Start listening":          "start_listening",
@@ -167,8 +167,6 @@ BUTTON_ACTIONS = {
     "Play/pause":               "media_toggle",
     "Next track":               "media_next",
     "Previous track":           "media_previous",
-    "Pause media":              "pause_media_player",
-    "Resume media":             "resume_media_player",
     "Stop media":               "stop_media_player",
     "Volume up":                "volume_up",
     "Volume down":              "volume_down",
@@ -177,9 +175,16 @@ BUTTON_ACTIONS = {
 }
 BUTTON_ACTION_LABELS = list(BUTTON_ACTIONS)
 
+# Actions that were folded into another. A saved gesture keeps working rather
+# than silently falling back to its default.
+BUTTON_ACTION_RENAMED = {
+    "Pause media":  "Play/pause",
+    "Resume media": "Play/pause",
+}
+
 BUTTON_GESTURES = [
     ("single", "Single press", "Start listening"),
-    ("double", "Double press", "Pause media"),
+    ("double", "Double press", "Play/pause"),
     ("triple", "Triple press", "Nothing"),
     ("long",   "Press and hold", "Bluetooth pairing"),
 ]
@@ -1847,6 +1852,7 @@ def load_buttons():
             user = json.load(f)
         if isinstance(user, dict):
             for k, v in user.items():
+                v = BUTTON_ACTION_RENAMED.get(v, v)
                 if k in cfg and v in BUTTON_ACTIONS:
                     cfg[k] = v
     except FileNotFoundError:
@@ -2139,15 +2145,13 @@ async def fire_gesture(ws, gesture):
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("action %s failed: %s", action, err)
         return
-    # Media actions go to the music that is playing (media_control), and the
-    # three the peripheral API also knows go on to the assistant's own player
-    # below, which is what plays media Home Assistant sends to its entity.
+    # Media actions go to the music that is playing (media_control). Stop also
+    # goes on to the assistant's own player below, which is what plays media
+    # Home Assistant sends to its entity.
     media = {
         "media_toggle": "toggle",
         "media_next": "next",
         "media_previous": "previous",
-        "pause_media_player": "pause",
-        "resume_media_player": "play",
         "stop_media_player": "stop",
     }
     if action in media:
