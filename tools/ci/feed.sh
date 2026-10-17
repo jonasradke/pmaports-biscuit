@@ -37,6 +37,7 @@ openssl rsa -in "$KEYDIR/$KEYNAME" -pubout 2>/dev/null | cmp -s - "$PUB" ||
 
 rm -rf "$SITE"
 mkdir -p "$SITE/edge/$ARCH"
+SITE=$(cd "$SITE" && pwd)     # docker -v takes a relative path as a volume name
 cp "$SRC"/*.apk "$SITE/edge/$ARCH/"
 cp "$PUB" "$SITE/"
 : > "$SITE/.nojekyll"
