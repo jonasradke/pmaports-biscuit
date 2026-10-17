@@ -138,6 +138,12 @@ if [ -n "${KERNEL_CACHE:-}" ] && [ -f "$KERNEL_CACHE/linux-amazon-biscuit-$K_V.a
 	sudo mkdir -p "$PKG" "$ABUILD_KEYS"
 	sudo cp "$KERNEL_CACHE/linux-amazon-biscuit-$K_V.apk" "$PKG/"
 	sudo cp -a "$KERNEL_CACHE/config_abuild/." "$ABUILD_KEYS/"
+	# pmbootstrap copies its abuild key into a chroot only when it first
+	# builds there, and indexing runs in the native chroot before that: without
+	# the key there, apk index calls the cached kernel UNTRUSTED.
+	pmb chroot -- true
+	sudo mkdir -p "$WORK/chroot_native/etc/apk/keys"
+	sudo cp "$ABUILD_KEYS"/*.pub "$WORK/chroot_native/etc/apk/keys/"
 	pmb index
 fi
 
