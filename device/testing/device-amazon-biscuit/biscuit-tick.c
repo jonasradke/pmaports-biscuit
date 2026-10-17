@@ -48,10 +48,15 @@
 #include <spa/param/audio/format-utils.h>
 #include <pipewire/pipewire.h>
 
-#define RATE          48000
+/* The file plays at its own rate and PipeWire converts it to the graph's.
+ * Requiring 48 kHz silenced every tick whenever the volume sound was set to
+ * one of the assistant's 22.05 kHz files: biscuit-tick refused it at start,
+ * and biscuit-audio, which had just started it, took the press as played. */
+#define RATE_MIN      8000
+#define RATE_MAX      192000
 #define CHANNELS      2
-#define FADE_FRAMES   96         /* 2 ms */
-#define LEAD_FRAMES   48         /* keep 1 ms before the onset */
+#define FADE_MS       2
+#define LEAD_MS       1          /* kept before the onset */
 #define SILENT_BELOW  64         /* the head of the file counts as silent */
 #define AMP_STATE     "/run/biscuit-dsp/amp"
 #define DSP_CONTROL   "/run/biscuit-dsp/control"
@@ -67,6 +72,8 @@ struct tick {
 
 	short *pcm;                  /* interleaved stereo, onset first */
 	long frames;
+	int rate;                    /* the file's */
+	int fade_frames;             /* FADE_MS at that rate */
 
 	long pos;                    /* frame playing, or -1 */
 	long fade_pos;               /* frame of a tone being faded out, or -1 */
@@ -86,10 +93,11 @@ static int load(struct tick *t, const char *path)
 		fprintf(stderr, "biscuit-tick: %s: %s\n", path, sf_strerror(NULL));
 		return -1;
 	}
-	if (info.samplerate != RATE || info.channels < 1 || info.channels > 2) {
-		fprintf(stderr, "biscuit-tick: %s: need %d Hz mono or stereo, got "
-			"%d Hz %d channels\n", path, RATE, info.samplerate,
-			info.channels);
+	if (info.samplerate < RATE_MIN || info.samplerate > RATE_MAX ||
+	    info.channels < 1 || info.channels > 2) {
+		fprintf(stderr, "biscuit-tick: %s: need %d-%d Hz mono or stereo, "
+			"got %d Hz %d channels\n", path, RATE_MIN, RATE_MAX,
+			info.samplerate, info.channels);
 		sf_close(f);
 		return -1;
 	}
@@ -116,7 +124,10 @@ static int load(struct tick *t, const char *path)
 		free(raw);
 		return -1;
 	}
-	first = first > LEAD_FRAMES ? first - LEAD_FRAMES : 0;
+	t->rate = info.samplerate;
+	t->fade_frames = t->rate * FADE_MS / 1000;
+	long lead = (long)t->rate * LEAD_MS / 1000;
+	first = first > lead ? first - lead : 0;
 
 	t->frames = got - first;
 	t->pcm = calloc((size_t)t->frames * CHANNELS, sizeof(short));
@@ -131,7 +142,7 @@ static int load(struct tick *t, const char *path)
 				    + (info.channels == 1 ? 0 : c)];
 	free(raw);
 	fprintf(stderr, "biscuit-tick: %s, %ld ms of leading silence dropped\n",
-		path, first * 1000 / RATE);
+		path, first * 1000 / t->rate);
 	return 0;
 }
 
@@ -155,7 +166,7 @@ static void on_process(void *data)
 	if (__atomic_exchange_n(&t->start, 0, __ATOMIC_ACQ_REL)) {
 		if (t->pos >= 0) {
 			t->fade_pos = t->pos;
-			t->fade_left = FADE_FRAMES;
+			t->fade_left = t->fade_frames;
 		}
 		t->pos = 0;
 	}
@@ -167,7 +178,7 @@ static void on_process(void *data)
 				v += t->pcm[t->pos * CHANNELS + c];
 			if (t->fade_left > 0 && t->fade_pos < t->frames)
 				v += t->pcm[t->fade_pos * CHANNELS + c]
-				     * t->fade_left / (FADE_FRAMES + 1);
+				     * t->fade_left / (t->fade_frames + 1);
 			out[i * CHANNELS + c] = v > 32767 ? 32767
 					      : v < -32768 ? -32768 : v;
 		}
@@ -362,7 +373,7 @@ int main(int argc, char *argv[])
 	params[0] = spa_format_audio_raw_build(&bld, SPA_PARAM_EnumFormat,
 		&SPA_AUDIO_INFO_RAW_INIT(.format = SPA_AUDIO_FORMAT_S16,
 					 .channels = CHANNELS,
-					 .rate = RATE));
+					 .rate = (uint32_t)t.rate));
 
 	if (pw_stream_connect(t.stream, PW_DIRECTION_OUTPUT, PW_ID_ANY,
 			      PW_STREAM_FLAG_AUTOCONNECT |

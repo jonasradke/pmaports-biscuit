@@ -607,6 +607,12 @@ def _tone_play():
 # and a restart of PipeWire takes the stream with it.
 TICK_PLAYER = "/usr/bin/biscuit-tick"
 TICK_RETRY_S = 5.0
+# A biscuit-tick that exits this soon after starting could not use the file
+# (unreadable, or a format it refuses). It cannot say so before play() has
+# handed it the press, so the press after that, and every one for TICK_FAILED_S,
+# goes to the old player instead of to a process that will never sound.
+TICK_EARLY_EXIT_S = 3.0
+TICK_FAILED_S = 60.0
 
 
 class TickPlayer(object):
@@ -616,6 +622,8 @@ class TickPlayer(object):
         self._lock = threading.Lock()
         self._proc = None
         self._path = None
+        self._started = 0.0
+        self._failed = None      # (path, monotonic time) of an early exit
 
     def _ensure(self, path):
         """Have a biscuit-tick running for `path`. Called with the lock held."""
@@ -636,6 +644,7 @@ class TickPlayer(object):
                 env=dict(os.environ, XDG_RUNTIME_DIR="/run/pipewire"),
                 start_new_session=True)
             self._path = path
+            self._started = time.monotonic()
         finally:
             if errf is not None:
                 errf.close()
@@ -648,11 +657,19 @@ class TickPlayer(object):
                 pass
             self._proc = None
 
+    def _refused(self, path):
+        """Whether biscuit-tick recently could not play `path`. Lock held."""
+        return (self._failed is not None and self._failed[0] == path
+                and time.monotonic() - self._failed[1] < TICK_FAILED_S)
+
     def warm(self):
         """Keep biscuit-tick running from service start. Its own thread."""
         while True:
             path = tone_path()
             proc = None
+            with self._lock:
+                if path and self._refused(path):
+                    path = None
             if path:
                 with self._lock:
                     try:
@@ -665,6 +682,8 @@ class TickPlayer(object):
                 proc.wait()
                 with self._lock:
                     current = self._proc is proc
+                    if current and time.monotonic() - self._started < TICK_EARLY_EXIT_S:
+                        self._failed = (self._path, time.monotonic())
                 if current:
                     log("volume tone: biscuit-tick exited (%s), see %s"
                         % (proc.returncode,
@@ -676,6 +695,8 @@ class TickPlayer(object):
     def play(self, path):
         """Start the tone now. False means use the old player instead."""
         with self._lock:
+            if self._refused(path):
+                return False
             try:
                 self._ensure(path)
                 if self._proc.poll() is not None:
