@@ -14,6 +14,9 @@ the daemon follows the track position from the server's metadata and,
 past that point, sends previous twice: the first restarts the track and
 zeroes its elapsed time at once, the second steps back, and the server's
 one-second debounce plays only the result.
+A new track that arrives without fresh progress drops the old position
+rather than extrapolate it, and a reconnect forgets the last session's
+position and playback state.
 
 A socket that fails to open only logs: the speaker keeps playing.
 
@@ -77,7 +80,7 @@ A socket that fails to open only logs: the speaker keeps playing.
  
  @dataclass
  class DaemonArgs:
-@@ -86,6 +115,15 @@
+@@ -86,6 +115,17 @@
          self._server_url: str | None = None
          self._group_update_unsubscribe: Callable[[], None] | None = None
          self._server_command_unsubscribe: Callable[[], None] | None = None
@@ -89,11 +92,13 @@ A socket that fails to open only logs: the speaker keeps playing.
 +        # (track progress ms, speed x1000, monotonic time received), from the
 +        # server's metadata; None when the server reports no progress.
 +        self._progress: tuple[int, int, float] | None = None
++        # Title, artist and album as last reported, merged across updates.
++        self._track: dict[str, str | None] = {}
 +        self._metadata_unsubscribe: Callable[[], None] | None = None
  
      def _create_client(self) -> SendspinClient:
          """Create a new SendspinClient instance."""
-@@ -168,6 +206,7 @@
+@@ -168,6 +208,7 @@
          )
          await self._audio_handler.read_initial_volume()
          await self._audio_handler.start_volume_monitor()
@@ -101,7 +106,7 @@ A socket that fails to open only logs: the speaker keeps playing.
  
          try:
              if self._args.url is not None:
-@@ -179,6 +218,9 @@
+@@ -179,6 +220,9 @@
          except asyncio.CancelledError:
              logger.debug("Daemon cancelled")
          finally:
@@ -111,7 +116,7 @@ A socket that fails to open only logs: the speaker keeps playing.
              if self._mpris is not None:
                  self._mpris.stop()
                  self._mpris = None
-@@ -245,6 +287,7 @@
+@@ -245,6 +289,7 @@
              self._handle_server_command
          )
          self._group_update_unsubscribe = client.add_group_update_listener(self._on_group_update)
@@ -119,18 +124,22 @@ A socket that fails to open only logs: the speaker keeps playing.
          if MPRIS_AVAILABLE and self._args.use_mpris:
              self._mpris = SendspinMpris(client)
              self._mpris.start()
-@@ -257,6 +300,10 @@
+@@ -257,6 +302,14 @@
          if self._group_update_unsubscribe is not None:
              self._group_update_unsubscribe()
              self._group_update_unsubscribe = None
 +        if self._metadata_unsubscribe is not None:
 +            self._metadata_unsubscribe()
 +            self._metadata_unsubscribe = None
++        # Both describe the session that just ended; a reconnect starts
++        # from what the server reports next, not from them.
 +        self._progress = None
++        self._track = {}
++        self._playback_state = None
          if self._mpris is not None:
              self._mpris.stop()
              self._mpris = None
-@@ -300,6 +347,8 @@
+@@ -300,6 +353,8 @@
  
      def _on_group_update(self, payload: GroupUpdateServerPayload) -> None:
          """Track last played server for multi-server arbitration."""
@@ -139,7 +148,7 @@ A socket that fails to open only logs: the speaker keeps playing.
          if payload.playback_state != PlaybackStateType.PLAYING:
              return
          if self._client is None or self._client.server_info is None:
-@@ -417,6 +466,84 @@
+@@ -417,6 +472,95 @@
                  logger.exception("Unexpected error during connection")
                  break
  
@@ -148,6 +157,17 @@ A socket that fails to open only logs: the speaker keeps playing.
 +        meta = payload.metadata
 +        if meta is None:
 +            return
++        # A new track without fresh progress leaves the old track's position
++        # behind, and extrapolating it would make previous go back two
++        # tracks. Forget it: one previous at worst restarts the new track.
++        track = dict(self._track)
++        for name in ("title", "artist", "album"):
++            value = getattr(meta, name, None)
++            if value is None or isinstance(value, str):   # else: not in this update
++                track[name] = value
++        if self._track and track != self._track:
++            self._progress = None
++        self._track = track
 +        if isinstance(meta.progress, Progress):
 +            p = meta.progress
 +            self._progress = (p.track_progress, p.playback_speed, time.monotonic())
@@ -224,7 +244,7 @@ A socket that fails to open only logs: the speaker keeps playing.
      def _handle_server_command(self, payload: ServerCommandPayload) -> None:
          """Handle server commands for player volume/mute control."""
          if payload.player is None or self._settings is None:
-@@ -475,3 +602,13 @@
+@@ -475,3 +619,13 @@
                  client_name=self._args.client_name,
              )
          )

@@ -2033,8 +2033,13 @@ async def watch_action_button(ws):
 SENDSPIN_CONTROL = "/run/sendspin-control"
 BT_RESUME_WINDOW_S = 30 * 60
 DBUS_TIMEOUT_S = 3
+# Finding the phone's player walks bluez's whole object tree - a dbus-send per
+# press, before Music Assistant is even asked. A player found is kept and only
+# its Status is read; "no phone" is believed for BT_SCAN_S, so a run of presses
+# with no phone costs one walk.
+BT_SCAN_S = 10.0
 _BT_PLAYER_RE = re.compile(r'object path "(/org/bluez/hci\d+/dev_[0-9A-F_]+/player\d+)"')
-_media = {"bt_paused_at": None}
+_media = {"bt_paused_at": None, "bt_path": None, "bt_scanned": None}
 
 
 def _dbus(*args):
@@ -2052,15 +2057,31 @@ def _dbus(*args):
     return r.stdout if r.returncode == 0 else None
 
 
+def _bt_status(path):
+    out = _dbus(path, "org.freedesktop.DBus.Properties.Get",
+                "string:org.bluez.MediaPlayer1", "string:Status")
+    m = re.search(r'string "(\w+)"', out or "")
+    return m.group(1) if m else None
+
+
 def bt_player():
     """(object path, status) of a connected phone's AVRCP player, or None."""
+    path = _media["bt_path"]
+    if path is not None:
+        status = _bt_status(path)
+        if status is not None:
+            return path, status
+        _media["bt_path"] = None          # gone: the phone disconnected
+    scanned = _media["bt_scanned"]
+    if scanned is not None and time.monotonic() - scanned < BT_SCAN_S:
+        return None
+    _media["bt_scanned"] = time.monotonic()
     out = _dbus("/", "org.freedesktop.DBus.ObjectManager.GetManagedObjects")
     for path in _BT_PLAYER_RE.findall(out or ""):
-        status = _dbus(path, "org.freedesktop.DBus.Properties.Get",
-                       "string:org.bluez.MediaPlayer1", "string:Status")
-        m = re.search(r'string "(\w+)"', status or "")
-        if m:
-            return path, m.group(1)
+        status = _bt_status(path)
+        if status is not None:
+            _media["bt_path"] = path
+            return path, status
     return None
 
 
@@ -2074,7 +2095,7 @@ def sendspin_control(word):
 
 
 def media_control(word):
-    """play, pause, toggle, stop, next or previous - to whatever is playing.
+    """toggle, stop, next or previous - to whatever is playing.
 
     Blocking (dbus-send), so the caller runs it off the event loop.
     """
@@ -2083,7 +2104,7 @@ def media_control(word):
     paused_by_us = (_media["bt_paused_at"] is not None
                     and time.monotonic() - _media["bt_paused_at"] < BT_RESUME_WINDOW_S)
     phone = status == "playing" or (status == "paused" and paused_by_us
-                                    and word in ("toggle", "play"))
+                                    and word == "toggle")
     if phone:
         if word == "toggle":
             word = "pause" if status == "playing" else "play"
