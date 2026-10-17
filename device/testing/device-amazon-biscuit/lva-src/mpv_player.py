@@ -8,11 +8,13 @@
 # Changed by liamtw22 and contributors, 2026, for the Amazon Echo Dot
 # (2nd gen) postmarketOS port. The upstream copyright is unchanged.
 # Changes: qualification instrumentation hooks (read-only); waits for the
-# speaker amplifier before a sound starts (_wait_for_amplifier).
+# speaker amplifier before a sound starts (_wait_for_amplifier), off the
+# caller's thread.
 # mpv_player.py
 from . import qualification_v1 as _qualification_v1
 import logging
 import os
+import threading
 import time
 from typing import Callable, List, Optional, Union
 
@@ -76,6 +78,13 @@ class MpvMediaPlayer:
         self._player = LibMpvPlayer(device=device)
         self._done_callback: Optional[Callable[[], None]] = None
         self._playlist: List[str] = []
+        # BISCUIT: a sound waiting for the amplifier. play() is called on the
+        # satellite's event loop, so the wait happens in a thread of its own;
+        # every play() and stop() bumps the generation, and a waiting start
+        # whose generation is no longer current is dropped.
+        self._start_lock = threading.Lock()
+        self._generation = 0
+        self._pending = False
 
         self._log.debug("MpvMediaPlayer initialized (device=%s)", device)
 
@@ -117,10 +126,30 @@ class MpvMediaPlayer:
         self._playlist = urls
         self._done_callback = done_callback
 
-        # Start playing first URL, once the speaker can be heard.
+        # Start playing first URL, once the speaker can be heard. Normally at
+        # once: the amplifier is held on unless mbcl.conf sets idle_release_s.
+        with self._start_lock:
+            self._generation += 1
+            generation = self._generation
+            self._pending = _read_amp_state() not in ("", "ready")
+        if not self._pending:
+            self._start(generation, stop_first)
+            return
+        threading.Thread(
+            target=self._start_when_audible, args=(generation, stop_first), daemon=True
+        ).start()
+
+    def _start_when_audible(self, generation: int, stop_first: bool) -> None:
         _wait_for_amplifier()
-        next_url = self._playlist.pop(0)
-        self._player.play(next_url, done_callback=self._on_track_finished, stop_first=stop_first)
+        self._start(generation, stop_first)
+
+    def _start(self, generation: int, stop_first: bool) -> None:
+        with self._start_lock:
+            if generation != self._generation or not self._playlist:
+                return  # stopped, or replaced by a newer play(), while waiting
+            self._pending = False
+            next_url = self._playlist.pop(0)
+            self._player.play(next_url, done_callback=self._on_track_finished, stop_first=stop_first)
 
     @_qualification_v1.activity
     def _on_track_finished(self) -> None:
@@ -157,6 +186,9 @@ class MpvMediaPlayer:
         """Stop playback and invoke the done callback if present."""
         self._log.debug("stop() called")
 
+        with self._start_lock:
+            self._generation += 1
+            self._pending = False
         self._player.stop()
 
         if self._done_callback:
@@ -170,7 +202,9 @@ class MpvMediaPlayer:
     def is_playing(self) -> bool:
         """Check if the player is currently playing or paused."""
         state = self._player.state()
-        return state in (PlayerState.PLAYING, PlayerState.PAUSED, PlayerState.LOADING)
+        return self._pending or state in (
+            PlayerState.PLAYING, PlayerState.PAUSED, PlayerState.LOADING
+        )
 
     def set_volume(self, volume: float) -> None:
         """
