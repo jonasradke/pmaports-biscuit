@@ -38,15 +38,12 @@ makedepends="
 	lame-libs
 	mpg123-dev
 	opus-dev
+	libldac-dev
 	"
-case "$CARCH" in
-s390x)
-	# libldac broken on s390x
-	;;
-*)
-	makedepends="$makedepends libldac-dev"
-	;;
-esac
+# libldac-dev is listed directly, not added in a case on $CARCH as Alpine's
+# APKBUILD does: pmbootstrap reads makedepends without running the APKBUILD,
+# so a dependency added by shell code is never installed and configure fails
+# with "Package 'ldacBT-abr' not found". This fork only builds aarch64.
 source="$pkgname-$pkgver.tar.gz::https://github.com/Arkq/bluez-alsa/archive/v$pkgver.tar.gz
 	bluealsa.initd
 	bluealsa.confd
