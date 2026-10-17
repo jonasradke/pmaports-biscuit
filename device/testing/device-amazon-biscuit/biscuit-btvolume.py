@@ -110,8 +110,15 @@ class Bridge(object):
         value = pct_to_bt(pct)
         with self.lock:
             self.sent_bt = (value, time.monotonic())
-        result = subprocess.run([self.ctl, "volume", path, str(value), str(value)],
-                                capture_output=True, text=True, timeout=5)
+        try:
+            result = subprocess.run([self.ctl, "volume", path, str(value), str(value)],
+                                    capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as err:
+            # A stalled bluealsad must cost this one update, not the thread
+            # that calls this: watch_device would die with it, and the Echo's
+            # level would never reach the phone again.
+            log("could not set %s to %d: %s" % (path, value, err))
+            return
         if result.returncode != 0:
             log("could not set %s to %d: %s" % (path, value, result.stderr.strip()))
 
@@ -185,7 +192,10 @@ class Bridge(object):
             if pct is None or pct == self.device_pct:
                 continue
             self.device_pct = pct
-            self.device_changed(pct)
+            try:
+                self.device_changed(pct)
+            except Exception as err:  # noqa: BLE001 - this thread must outlive any one update
+                log("could not pass volume %d to the phone: %s" % (pct, err))
 
     def watch_bluealsa(self):
         """Follow bluealsactl monitor until it exits; the caller restarts it."""
