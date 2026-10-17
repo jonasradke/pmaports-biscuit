@@ -142,6 +142,10 @@ if [ -n "${KERNEL_CACHE:-}" ] && [ -f "$KERNEL_CACHE/linux-amazon-biscuit-$K_V.a
 	# builds there, and indexing runs in the native chroot before that: without
 	# the key there, apk index calls the cached kernel UNTRUSTED.
 	pmb chroot -- true
+	# Both belong to the chroots' pmos user, which signs the index: the cache
+	# hands them back owned by the runner, and a root-made packages directory
+	# is not writable by pmos either.
+	sudo chown -R 12345:12345 "$ABUILD_KEYS" "$WORK/packages"
 	sudo mkdir -p "$WORK/chroot_native/etc/apk/keys"
 	sudo cp "$ABUILD_KEYS"/*.pub "$WORK/chroot_native/etc/apk/keys/"
 	pmb index
