@@ -1,10 +1,10 @@
 #!/bin/sh
 # Build this port with pmbootstrap, as BUILDING.md describes, unattended.
 #
-#   tools/ci/build.sh packages   bluez-alsa, boot-deploy and the device packages
-#   tools/ci/build.sh full       the above, the kernel, the disk and boot image
-#                                (cleaned as in BUILDING.md section 5) and the
-#                                four TWRP zips
+#   tools/ci/build.sh packages   bluez-alsa, boot-deploy, the kernel (the device
+#                                package depends on it) and the device packages
+#   tools/ci/build.sh full       the above, the disk and boot image (cleaned as
+#                                in BUILDING.md section 5) and the four TWRP zips
 #
 # Runs on a Linux x86_64 machine with sudo; GitHub Actions' ubuntu runners are
 # what it is written for (.github/workflows/build.yml). Results land in $OUT:
@@ -102,11 +102,50 @@ build() {   # $1 package, $2.. extra flags
 	pmb build "$@"
 }
 
+# The kernel's source archive. GitHub generates archive downloads on the fly
+# and their bytes are not stable: today's download of the pinned commit no
+# longer matches the APKBUILD's sha512, though the tree is the same commit.
+# The archive the releases were built from is inside the kernel source bundle
+# every release carries, so pmbootstrap's download cache is seeded from that.
+K_DIR="$REPO/device/testing/linux-amazon-biscuit"
+K_V=$(version_of "$K_DIR")
+K_ARCHIVE=$(sed -n 's/^\([0-9a-f]\{128\}\)  \(linux-amazon-biscuit-[0-9a-f]\{40\}\.tar\.gz\)$/\2/p' "$K_DIR/APKBUILD")
+DISTFILES="$WORK/cache_distfiles"
+if [ -n "$K_ARCHIVE" ] && ! sudo test -f "$DISTFILES/$K_ARCHIVE"; then
+	log "kernel source archive from the release bundle"
+	t=$(mktemp -d)
+	gh release download "${KERNEL_SOURCE_RELEASE:-v1.0}" \
+		-R "${KERNEL_SOURCE_REPO:-liamtw22/pmaports-biscuit}" -D "$t" \
+		-p 'linux-amazon-biscuit-r*-source.tar.gz'
+	tar xzf "$t"/linux-amazon-biscuit-r*-source.tar.gz -C "$t" --wildcards "*/$K_ARCHIVE"
+	sudo mkdir -p "$DISTFILES"
+	sudo cp "$t"/*/"$K_ARCHIVE" "$DISTFILES/"
+	rm -rf "$t"
+fi
+
+# A built kernel is kept in $KERNEL_CACHE between runs (the workflow caches it
+# by the kernel package's files), with the abuild key that signed it: a cold
+# kernel build takes most of an hour, and it only changes when its APKBUILD
+# or patches do. The key travels with it so apk in the chroots trusts it.
+ABUILD_KEYS="$WORK/config_abuild"
+if [ -n "${KERNEL_CACHE:-}" ] && [ -f "$KERNEL_CACHE/linux-amazon-biscuit-$K_V.apk" ]; then
+	log "kernel $K_V from the cache"
+	sudo mkdir -p "$PKG" "$ABUILD_KEYS"
+	sudo cp "$KERNEL_CACHE/linux-amazon-biscuit-$K_V.apk" "$PKG/"
+	sudo cp -a "$KERNEL_CACHE/config_abuild/." "$ABUILD_KEYS/"
+	pmb index
+fi
+
 build bluez-alsa --arch aarch64
 build boot-deploy --arch aarch64
+build linux-amazon-biscuit
 build device-amazon-biscuit --arch aarch64
-if [ "$MODE" = full ]; then
-	build linux-amazon-biscuit
+
+if [ -n "${KERNEL_CACHE:-}" ] && [ ! -f "$KERNEL_CACHE/linux-amazon-biscuit-$K_V.apk" ]; then
+	mkdir -p "$KERNEL_CACHE/config_abuild"
+	sudo cp "$PKG/linux-amazon-biscuit-$K_V.apk" "$KERNEL_CACHE/"
+	sudo cp -a "$ABUILD_KEYS/." "$KERNEL_CACHE/config_abuild/"
+	sudo chown -R "$(id -u):$(id -g)" "$KERNEL_CACHE"
 fi
 
 # pmbootstrap exits 0 even when it built something else (BUILDING.md section
@@ -127,10 +166,8 @@ for p in bluez-alsa bluez-alsa-openrc bluez-alsa-utils; do
 done
 BD_V=$(version_of "$APORTS/main/boot-deploy")
 cp "$PKG/boot-deploy-$BD_V.apk" "$OUT/apk/"
-if [ "$MODE" = full ]; then
-	K_V=$(version_of "$REPO/device/testing/linux-amazon-biscuit")
-	cp "$PKG/linux-amazon-biscuit-$K_V.apk" "$OUT/apk/"
-fi
+sudo cp "$PKG/linux-amazon-biscuit-$K_V.apk" "$OUT/apk/"
+sudo chown "$(id -u):$(id -g)" "$OUT"/apk/*.apk
 ls -l "$OUT/apk"
 
 [ "$MODE" = full ] || exit 0

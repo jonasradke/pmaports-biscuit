@@ -356,7 +356,8 @@ carries its complete source.
 [`tools/ci/build.sh`](tools/ci/build.sh), which can also be run by hand on a
 Linux machine with sudo:
 
-- every push to `echo-build` builds bluez-alsa, boot-deploy and the device
+- every push to `echo-build` builds bluez-alsa, boot-deploy, the kernel (kept
+  in the Actions cache until its recipe changes) and the device
   packages, as a check, and keeps them as a workflow artifact;
 - running the workflow by hand with **full** also builds the kernel, the image
   and the TWRP zips;

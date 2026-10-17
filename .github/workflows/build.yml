@@ -62,10 +62,27 @@ jobs:
           sudo apt-get install -y -qq zerofree e2fsprogs openssl
           sudo modprobe loop || true
 
+      - name: Restore the built kernel
+        id: kernel
+        uses: actions/cache/restore@v4
+        with:
+          path: kernel-cache
+          key: kernel-${{ hashFiles('device/testing/linux-amazon-biscuit/**') }}
+
       - name: Build
         env:
           MODE: ${{ (github.ref_type == 'tag' || inputs.full) && 'full' || 'packages' }}
+          KERNEL_CACHE: ${{ github.workspace }}/kernel-cache
+          GH_TOKEN: ${{ github.token }}
         run: sh tools/ci/build.sh "$MODE"
+
+      - name: Keep the built kernel
+        # Saved even when a later step fails: the kernel is the hour-long part.
+        if: always() && steps.kernel.outputs.cache-hit != 'true' && hashFiles('kernel-cache/*.apk') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: kernel-cache
+          key: kernel-${{ hashFiles('device/testing/linux-amazon-biscuit/**') }}
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
