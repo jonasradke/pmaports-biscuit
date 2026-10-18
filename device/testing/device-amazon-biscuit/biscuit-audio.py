@@ -607,11 +607,14 @@ def _tone_play():
 # and a restart of PipeWire takes the stream with it.
 TICK_PLAYER = "/usr/bin/biscuit-tick"
 TICK_RETRY_S = 5.0
-# A biscuit-tick that exits this soon after starting could not use the file
-# (unreadable, or a format it refuses). It cannot say so before play() has
-# handed it the press, so the press after that, and every one for TICK_FAILED_S,
-# goes to the old player instead of to a process that will never sound.
-TICK_EARLY_EXIT_S = 3.0
+# biscuit-tick exits with TICK_UNPLAYABLE when the file itself cannot be the
+# tick (unreadable, silent, or a format it refuses). It cannot say so before
+# play() has handed it the press, so the press after that, and every one for
+# TICK_FAILED_S, goes to the old player instead of to a process that will never
+# sound. Any other exit - PipeWire not up yet at boot, or restarted - is retried
+# after TICK_RETRY_S as before: judging by how soon it exited took a boot-time
+# "cannot connect" for a bad file and benched the tick for a minute.
+TICK_UNPLAYABLE = 3
 TICK_FAILED_S = 60.0
 
 
@@ -622,8 +625,7 @@ class TickPlayer(object):
         self._lock = threading.Lock()
         self._proc = None
         self._path = None
-        self._started = 0.0
-        self._failed = None      # (path, monotonic time) of an early exit
+        self._failed = None      # (path, monotonic time) it was refused
 
     def _ensure(self, path):
         """Have a biscuit-tick running for `path`. Called with the lock held."""
@@ -644,7 +646,6 @@ class TickPlayer(object):
                 env=dict(os.environ, XDG_RUNTIME_DIR="/run/pipewire"),
                 start_new_session=True)
             self._path = path
-            self._started = time.monotonic()
         finally:
             if errf is not None:
                 errf.close()
@@ -682,7 +683,7 @@ class TickPlayer(object):
                 proc.wait()
                 with self._lock:
                     current = self._proc is proc
-                    if current and time.monotonic() - self._started < TICK_EARLY_EXIT_S:
+                    if current and proc.returncode == TICK_UNPLAYABLE:
                         self._failed = (self._path, time.monotonic())
                 if current:
                     log("volume tone: biscuit-tick exited (%s), see %s"

@@ -62,6 +62,11 @@
 #define DSP_CONTROL   "/run/biscuit-dsp/control"
 #define AMP_POLL_MS   10
 #define AMP_WAIT_MS   600        /* play anyway after this: never lose a tick */
+/* Exit status for "this file cannot be the tick" - unreadable, silent, or a
+ * format refused below. biscuit-audio stops restarting a program that exits
+ * with it and plays the sound its old way instead. Every other failure - no
+ * PipeWire yet at boot, a PipeWire restart - exits 1 and is simply retried. */
+#define EXIT_UNPLAYABLE 3
 
 struct tick {
 	struct pw_main_loop *loop;
@@ -341,7 +346,7 @@ int main(int argc, char *argv[])
 		return 2;
 	}
 	if (load(&t, argv[1]) < 0)
-		return 1;
+		return EXIT_UNPLAYABLE;
 
 	pw_init(&argc, &argv);
 	t.loop = pw_main_loop_new(NULL);
