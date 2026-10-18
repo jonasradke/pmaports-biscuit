@@ -26,21 +26,21 @@ or its affiliates.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Wi-Fi | Yes | 2.4 and 5 GHz. First setup through a hotspot the Echo opens itself |
-| Bluetooth speaker (A2DP) | Yes | Phones and computers play to the Echo |
+| Wi-Fi | Yes | 2.4 and 5 GHz; a dual-band network is joined on 5 GHz. First setup through a hotspot the Echo opens itself |
+| Bluetooth speaker (A2DP) | Yes | Phones and computers play to the Echo, about 0.25 s behind, with the delay reported so video stays in sync. The phone's volume and the Echo's are one volume |
 | Bluetooth casting | Yes | The Echo plays through another Bluetooth speaker |
 | Bluetooth calls (HFP) | Partial | Hands-free calls through a paired phone, with echo cancellation and suppression. Works; call audio quality is still being tuned |
 | Home Assistant Bluetooth proxy | Yes | Over the ESPHome API, port 6054. Off by default, because scanning costs about half the 2.4 GHz Wi-Fi throughput; switch it on in the settings page's Home Assistant section |
-| Speaker | Yes | Speaker correction, multiband limiter, volume ceiling at the stock level. The correction curve is imported from your own Echo; without it the speaker plays flat |
+| Speaker | Yes | Speaker correction, multiband limiter, volume ceiling at the stock level. The amplifier stays on, so no sound starts with a pop. The correction curve is imported from your own Echo; without it the speaker plays flat |
 | Headphone jack | Yes | Output only, with plug detection |
-| Microphones and voice assistant | Yes | Optional app. All 7 microphones, a beamforming and echo-cancelling front end, on-device wake word (microWakeWord; "Alexa" by default, others selectable), Home Assistant Assist through linux-voice-assistant (ESPHome API, port 6053), timers, ducking of music while you speak |
-| Music Assistant speaker | Yes | Optional app. Sendspin player |
+| Microphones and voice assistant | Yes | Optional app. All 7 microphones, a beamforming and echo-cancelling front end, on-device wake word (microWakeWord; "Alexa" by default, others selectable), Home Assistant Assist through linux-voice-assistant (ESPHome API, port 6053), timers; music ducks while you speak and fades back up once the reply has been heard |
+| Music Assistant speaker | Yes | Optional app. Sendspin player; a volume change on the Echo reaches Music Assistant, and the action button can play, pause and skip |
 | Light ring | Yes | 12 RGB LEDs: activity patterns, talker direction, volume, timers, generated ambient effects, and your own Echo's stock animations if you import them |
-| Buttons and mute | Yes | Action, volume up/down and microphone mute with its red LED |
+| Buttons and mute | Yes | Volume up/down, microphone mute with its red LED, and the action button: single, double, triple press and hold each set to start listening, play/pause, next or previous track, volume, Bluetooth pairing and more, for Music Assistant or a phone over Bluetooth |
 | Ambient light sensor | Yes | Automatic ring brightness; illuminance sensor in Home Assistant |
-| Settings page | Yes | `http://<name>.local:8080`: Wi-Fi, Bluetooth, sound, microphones, ring, apps, updates, USB, date and time |
+| Settings page | Yes | `http://<name>.local:8080`: Wi-Fi, Bluetooth, sound, microphones, action button, ring, Home Assistant, apps, updates, USB, date and time |
 | Home Assistant entities | Yes | With the voice app: device settings (volume, ring, microphones, sounds and more) appear as entities through the ESPHome integration and stay in sync both ways |
-| Updates | Yes | Signed package feed; kernel and boot updates installed from the settings page |
+| Updates | Yes | Signed package feed, installed from the settings page; the boot image is installed with every update that changes it |
 | Time | Yes | chrony, plus Home Assistant's clock as a fallback source |
 | USB | Yes | Charging only by default. Network (RNDIS), microphone and speaker (USB Audio Class 2) can each be switched on |
 | Crash capture | Yes | Kernel logs survive a crash and reset (ramoops) |
@@ -116,7 +116,8 @@ and check them against its `SHA256SUMS`. Then follow the installation guide,
 **Updating:** the Echo checks this project's package feed
 (`https://jonasradke.github.io/pmaports-biscuit/edge`), which is on by default and
 put back on every boot unless you turn it off; the settings page's Updates
-section installs what it finds, including kernel and boot updates. To stop
+section installs what it finds, and installs the boot image along with any
+update that changes it. To stop
 using the feed, or to turn it back on, see
 [SECURITY.md](SECURITY.md#the-package-feed).
 
@@ -144,7 +145,8 @@ the ambient ring effects. [PROVENANCE.md](PROVENANCE.md) lists them.
 | `temp/bluez-alsa/` | Alpine's bluez-alsa updated to 5.0.0 for A2DP delay reporting, until Alpine packages it |
 | `base-pmaports/` | The three patches to upstream pmaports this port is built on |
 | `installer/` | The TWRP zips' source, their build script and tools, and the installation guide |
-| `tools/` | Developer tools; see [tools/README.md](tools/README.md) |
+| `tools/` | Developer tools; see [tools/README.md](tools/README.md). `tools/ci/` builds and signs a release |
+| `.github/workflows/build.yml` | The GitHub Actions build: packages on every push, a full release on a `v*-jr` tag |
 | `docs/HARDWARE.md` | What is inside the Echo and how each part is supported |
 
 The kernel is also published as a git tree:
@@ -156,7 +158,10 @@ files.
 ## Building
 
 See [BUILDING.md](BUILDING.md): the pmaports base, the kernel, the packages, the
-image and the zips, from scratch.
+image and the zips, from scratch. The fork's releases are built the same way
+by GitHub Actions, with [`tools/ci/build.sh`](tools/ci/build.sh), which also
+runs on any Linux machine with sudo; BUILDING.md's continuous-integration
+section explains how a release is cut.
 
 ## Reporting problems
 
