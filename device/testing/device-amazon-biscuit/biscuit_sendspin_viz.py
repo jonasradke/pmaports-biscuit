@@ -803,7 +803,11 @@ def attach(client):
         _S.client = client
         client.add_visualizer_listener(on_frames)
         client.add_color_listener(on_color)
-        client.add_server_hello_listener(on_server_hello)
+        # aiosendspin 9 has no server/hello listener any more; without
+        # this guard the AttributeError skipped every listener after it.
+        add_server_hello = getattr(client, "add_server_hello_listener", None)
+        if add_server_hello is not None:
+            add_server_hello(on_server_hello)
         client.add_metadata_listener(on_metadata)
         client.add_stream_start_listener(on_stream_start)
         client.add_stream_end_listener(lambda *a: drop_pending("stream end"))

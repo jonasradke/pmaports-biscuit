@@ -10,7 +10,7 @@ full licence texts for this repository's own files are in `LICENSES/`.
 bundle** - a stale hand-written manifest is what let a wheel bundling
 GPL libx264/libx265 into this tree once already.
 
-Generated 2026-09-29.
+Generated 2026-10-18.
 
 ## biscuit-voice-venv.tar.gz
 
@@ -90,21 +90,24 @@ Voice assistant virtualenv - linux-voice-assistant and its dependencies. Its cop
 
 Sendspin virtualenv - the media client and its dependencies. The three `sendspin-*.diff` files (Apache-2.0) patch it at build time.
 
-- 29840918 bytes, sha256 `96232500c7ec977699626e50b710a06f98be25878d8d8081e9058bfd0214f83f`
-- 24 Python distributions, 81 native objects
+- 25101436 bytes, sha256 `0fd976d8a31bdced0bb07b691969408fd33af2a8faa72662efb9f1fd1a31cbe0`
+- 27 Python distributions, 83 native objects
 - Exposure: PUBLISHED in the public apk feed as part of `device-amazon-biscuit-sendspin`
 
 | Distribution | Version | Licence | Licence text shipped |
 |---|---|---|---|
-| `aiosendspin` | 6.0.5 | Apache-2.0 | yes |
+| `aiosendspin` | 9.1.1 | Apache-2.0 | yes |
 | `aiosendspin-mpris` | 2.1.1 | Apache-2.0 | yes |
 | `av` | 18.1.0 | BSD-3-Clause | yes |
 | `cffi` | 2.1.1 | MIT-0 | yes |
+| `cpace` | 0.1.0 | Apache-2.0 | yes |
+| `cryptography` | 50.0.2 | Apache-2.0 OR BSD-3-Clause | yes |
 | `dbus-next` | 0.2.3 | MIT | yes |
 | `markdown-it-py` | 4.2.0 | MIT License | yes |
 | `mashumaro` | 3.22 | Apache-2.0 | yes |
 | `mdurl` | 0.1.2 | MIT License | yes |
 | `mpris-api` | 1.3.0 | MIT | yes |
+| `noiseprotocol` | 0.3.1 | MIT | yes |
 | `orjson` | 3.12.0 | MPL-2.0 AND (Apache-2.0 OR MIT) | yes |
 | `pillow` | 12.3.0 | MIT-CMU | yes |
 | `pip` | 26.2.1 | MIT | yes |
@@ -115,7 +118,7 @@ Sendspin virtualenv - the media client and its dependencies. The three `sendspin
 | `qrcode` | 8.2 | BSD | yes |
 | `readchar` | 4.2.2 | MIT Licence | yes |
 | `rich` | 15.0.0 | MIT | yes |
-| `sendspin` | 0.0.0 | Apache-2.0 | yes |
+| `sendspin` | 8.0.0 | Apache-2.0 | yes |
 | `sounddevice` | 0.5.6 | MIT | yes |
 | `textual-image` | 0.13.2 | GNU Lesser General Public License v3 or later (LGPLv3+) / GNU Library or Lesser General Public License (LGPL) | yes |
 | `tunit` | 1.7.2 | MIT | yes |
@@ -129,6 +132,7 @@ Sendspin virtualenv - the media client and its dependencies. The three `sendspin
 
 ### Libraries bundled by wheels
 
+- `cryptography.libs/libgcc_s-2d945d6c.so.1` (203337 bytes, GCC: (Alpine 14.2.0) 14.2.0) - GPL-3.0-or-later WITH GCC-exception-3.1 (the GCC runtime library), bundled unmodified by the wheel named in its path; this project did not build it. Corresponding source: built by Alpine Linux's gcc 14.2.0 package. The object does not record Alpine's package release, so no single aports commit can be named: the source is GCC 14.2.0 (https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/) with the patches in Alpine's aports `main/gcc` for pkgver 14.2.0 (https://gitlab.alpinelinux.org/alpine/aports/-/tree/master/main/gcc and its history). Licence texts in the bundle: **NO**.
 - `pillow.libs/libXau-541039f7.so.6.0.0` (131753 bytes) - covered by its wheel's own licence file.
 - `pillow.libs/libXdmcp-f7925934.so.6.0.0` (263257 bytes) - covered by its wheel's own licence file.
 - `pillow.libs/libavif-de6ae66a.so.16.4.2` (3609377 bytes) - covered by its wheel's own licence file.
@@ -246,7 +250,7 @@ copied.
 | `device/testing/linux-amazon-biscuit/*.patch` | GPL-2.0-only | this project's patches against bengris32/linux-mtk (branch mt8163/7.0, commit 20951722df6a); 109 of them are applied by the APKBUILD |
 | `device/testing/linux-amazon-biscuit/mt6625l-wlan-20260823.tar.gz` | GPL-2.0 | MediaTek's MT6625L WLAN driver from Amazon's GPL MT8163 3.18 kernel source release, modified: of its 159 C sources and headers, 133 are unchanged, 24 were changed for Linux 7.0, 2 are new, and the Kconfig and Makefile were written for this port. Branch biscuit-r243 of liamtw22/linux-mtk commits Amazon's original files first and this port's changes on top |
 | `lva-src/*.py`, `biscuit-lva-*.patch.txt`, `biscuit-peripheral-*.patch.txt` | Apache-2.0 | OHF-Voice/linux-voice-assistant at b0c53c41c11e, as the -voice package installs it. Modified, each with a MODIFIED FILE notice: `__main__.py`, `entity.py`, `satellite.py`, `peripheral_api.py`, `mpv_player.py` and `player/libmpv.py` (whole files from `lva-src/`), and `models.py` (changed in the venv's copy and by two `.patch.txt` patches; its notice is added at build time). New, each with a NEW FILE notice: `peripheral_transport.py`, `qualification_v1.py`. Every other file is byte-identical to upstream |
-| `sendspin-*.diff` | Apache-2.0 | patches against Sendspin/sendspin-cli (22b9ff308afe) and aiosendspin 6.0.5 |
+| `sendspin-*.diff` | Apache-2.0 | patches against Sendspin/sendspin-cli 8.0.0 and aiosendspin 9.1.1 |
 | `btproxy/api_pb2.py`, `btproxy/api_options_pb2.py` | MIT | aioesphomeapi 45.3.1, unmodified; Copyright (c) 2018 Otto Winter, full notice in btproxy/__init__.py |
 | `nacl-fast.min.js` | Unlicense (public domain) | TweetNaCl-js 1.0.3, unmodified |
 | `pulse-daemon-biscuit.conf`, `pulse-default-biscuit.pa` | MIT | postmarketOS pmaports' archived device-amazon-biscuit, unmodified (postmarketOS contributors); `deviceinfo`, `ucm2/HiFi.conf`, `ucm2/mt8163_biscuit.conf` and the APKBUILD started from the same package |
@@ -281,6 +285,7 @@ their source.
 
 - `cryptography.libs/libgcc_s-2d945d6c.so.1` in biscuit-voice-venv.tar.gz (GCC: (Alpine 14.2.0) 14.2.0) - built by Alpine Linux's gcc 14.2.0 package. The object does not record Alpine's package release, so no single aports commit can be named: the source is GCC 14.2.0 (https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/) with the patches in Alpine's aports `main/gcc` for pkgver 14.2.0 (https://gitlab.alpinelinux.org/alpine/aports/-/tree/master/main/gcc and its history)
 - `netifaces.libs/libgcc_s-60abea67.so.1` in biscuit-voice-venv.tar.gz (GCC: (GNU) 9.2.0) - built by a GCC 9.2.0 cross toolchain made with musl-cross-make (the source paths it records, `src_gcc/`, are musl-cross-make's layout): the source is GCC 9.2.0 (https://ftp.gnu.org/gnu/gcc/gcc-9.2.0/) with musl-cross-make's patches for that version (https://github.com/richfelker/musl-cross-make, `patches/gcc-9.2.0/`)
+- `cryptography.libs/libgcc_s-2d945d6c.so.1` in biscuit-sendspin-venv.tar.gz (GCC: (Alpine 14.2.0) 14.2.0) - built by Alpine Linux's gcc 14.2.0 package. The object does not record Alpine's package release, so no single aports commit can be named: the source is GCC 14.2.0 (https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/) with the patches in Alpine's aports `main/gcc` for pkgver 14.2.0 (https://gitlab.alpinelinux.org/alpine/aports/-/tree/master/main/gcc and its history)
 
 GPL-3.0-or-later WITH GCC-exception-3.1 (the GCC runtime library), bundled unmodified by the wheel named in its path; this project did not build it.
 

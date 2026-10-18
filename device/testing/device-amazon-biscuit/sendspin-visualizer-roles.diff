@@ -36,7 +36,7 @@ the vendored application carries as little of ours as possible.
 @@ -12,6 +12,11 @@
  
  from aiohttp import ClientError, web
- from aiosendspin.client import ClientListener, SendspinClient
+ from aiosendspin.client import ClientListener, PairingSupport, SendspinClient
 +from aiosendspin.models.visualizer import (
 +    ClientHelloVisualizerSpectrum,
 +    ClientHelloVisualizerSupport,
@@ -44,8 +44,8 @@ the vendored application carries as little of ours as possible.
 +import biscuit_sendspin_viz
  from aiosendspin.models.core import GroupUpdateServerPayload, ServerCommandPayload
  from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
- from aiosendspin_mpris import MPRIS_AVAILABLE, SendspinMpris
-@@ -85,9 +90,13 @@
+ from aiosendspin.noise.driver import HandshakeAbortedError
+@@ -91,9 +96,13 @@
      def _create_client(self) -> SendspinClient:
          """Create a new SendspinClient instance."""
          assert self._audio_handler is not None
@@ -62,7 +62,7 @@ the vendored application carries as little of ours as possible.
  
          supported_formats = detect_supported_audio_formats(self._args.audio_device)
          if self._args.preferred_format is not None:
-@@ -102,6 +111,15 @@
+@@ -110,6 +119,15 @@
                  manufacturer=self._args.manufacturer,
                  product_name=self._args.product_name,
              ),
@@ -78,11 +78,11 @@ the vendored application carries as little of ours as possible.
              player_support=ClientHelloPlayerSupport(
                  supported_formats=supported_formats,
                  buffer_capacity=32_000_000,
-@@ -304,6 +322,7 @@
-             # Per spec: always complete the handshake before deciding which
-             # server to keep.
-             client = self._create_client()
-+            biscuit_sendspin_viz.attach(client)
+@@ -334,6 +352,7 @@
+         assert self._settings is not None
  
-             try:
-                 await client.attach_websocket(ws)
+         client = self._create_client()
++        biscuit_sendspin_viz.attach(client)
+         attach_task = create_task(client.attach_websocket(ws))
+ 
+         try:

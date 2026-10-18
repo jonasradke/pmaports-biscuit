@@ -3,7 +3,7 @@ maintainer="jonasradke <me@jonasradke.com>"
 pkgname=device-amazon-biscuit
 pkgdesc="Amazon Echo Dot (2nd gen)"
 pkgver=6
-pkgrel=300
+pkgrel=301
 # The public release this build is: the name on the release page, the install
 # zip and the settings page. pkgrel is the build and keeps counting, because
 # apk orders upgrades by it and a release name like 1.0 would sort below the
@@ -279,7 +279,6 @@ source="
 	biscuit-sendspin-stream.sh
 	biscuit_sendspin_viz.py
 	sendspin-visualizer-roles.diff
-	sendspin-media-commands.diff
 	sendspin-client-visualizer.diff
 	sendspin-volume-feedback.diff
 	sendspin-starved-silence.diff
@@ -1211,15 +1210,11 @@ package() {
 		"$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages/biscuit_sendspin_viz.py
 	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages \
 		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-visualizer-roles.diff )
-	# The server advertises seek and seek_relative, which the vendored
-	# MediaCommand enum does not have; one unknown member discards the
-	# whole server/state message. Same --fuzz=0 reasoning: if an update
-	# adds them upstream this must fail here, not apply somewhere else.
-	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages \
-		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-media-commands.diff )
+	# (sendspin-media-commands.diff, which added seek and seek_relative to
+	# MediaCommand, went with aiosendspin 9: upstream has both now.)
 	# The visualiser on the client-initiated path too (r280): the roles
 	# patch attaches it only where the server connects in. Generated against
-	# a tree with both patches above applied, so it goes last.
+	# a tree with the patch above applied, so it follows it.
 	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages \
 		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-client-visualizer.diff )
 	# Volume both ways: the hook controller now watches biscuit-audio's
@@ -1244,8 +1239,7 @@ package() {
 	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages \
 		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-media-control.diff )
 	# Apache-2.0 4(b): a file we changed says so, at the top where it is seen.
-	for _f in aiosendspin/models/controller.py aiosendspin/models/types.py \
-			sendspin/daemon/daemon.py sendspin/cli.py sendspin/hook_volume.py \
+	for _f in sendspin/daemon/daemon.py sendspin/cli.py sendspin/hook_volume.py \
 			sendspin/audio.py; do
 		sed -i "1i # Modified by liamtw22 and contributors for the Echo Dot 2 port (sendspin-*.diff in pmaports-biscuit)." \
 			"$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages/$_f
@@ -1371,7 +1365,11 @@ sendspin() {
 	# AUDIO codecs: flac in, flac out, opus out. Linking the distro build instead
 	# leaves the GPL libraries to Alpine, which already ships them here for mpv,
 	# and drops 23 MB from this package.
-	depends="$pkgname=$pkgver-r$pkgrel portaudio py3-zeroconf ffmpeg-libs"
+	# py3-numpy and py3-aiohttp: the same system-site-packages story as
+	# zeroconf. sendspin 8 imports numpy directly and aiosendspin needs aiohttp;
+	# both were only installed because the voice bundle depends on them, so a
+	# speaker without voice would not start.
+	depends="$pkgname=$pkgver-r$pkgrel portaudio py3-zeroconf ffmpeg-libs py3-numpy py3-aiohttp"
 	amove usr/lib/sendspin
 	amove etc/init.d/biscuit-sendspin
 	amove usr/bin/biscuit-sendspin-volume
@@ -1483,7 +1481,7 @@ f32041c30ec81691184497ba3f1dcf1bd20666926eed245d525fcf21ffb382663f887d822b4a0639
 cf5f4d8aa741c6d35d193761f34765a000f1c5b4c56f32e30a6c609d8a2fd6c5aafa17099a1d54b9fea1cdfa945f0fdea797a59866a8a27a7c0e56a8d76cab3b  biscuit_eq.py
 1f6385167b06eede4834ef72cf1cfabd9097ab9ae7f9d1cd06ea717da693995774d29ce632d88c5cf589604e4c416f87ea11e7d77c6bb18f3c7d73a7cf00138b  biscuit-portal.py
 e59783b0829f5e2e2e055cbbec7d85b865c58208d5b99df21297395f4e59a1d14a1129dd07efb81d5a2f7c554393ec44d1e90b70277fe583dce8589b4e1eda1c  nacl-fast.min.js
-2bab9fa82607e90fae4822acf4562fa5401eda3a7a4937ae449c416287b4293d0cc6729dff8e31d96091688cbfcfb601a889cd19a51df55753dd8f3866d88dca  biscuit-apps.json
+8a0045cec4092992ef98aab5827ea5a82a6bba4c753fd51f092e0424dd112b4b6dab3df2013cf9618547950d233912a30046bfe2e573fbe4de5d28e3ac4a6508  biscuit-apps.json
 bcbc4188cc5549e0f221727b59cc72a77b98e52cf4c80f4cd0b0c56a99ffbe1d08a58b1acf890af2f26b5da43486550622af3555137d8eaa6f92cb0572b9cfab  biscuit-reset.conf
 f2da5c538522d502c4b226bfa457942f0b80754e061a3476d584850ef1c47a388dcf2260af90c7dc3626cfb3b822399ae6ab53623c454af8430d88704400bf09  biscuit-pkgjob.sh
 126132ea25d332c34213e11163f9a9589a928f754d70392d8d977c9baba4c27e6fef67cc9bd7e42df6361d15b606b60704e2f6130cc81191dd71b233ac609749  biscuit-boot-update
@@ -1537,20 +1535,19 @@ e53d49b335da2e1255424392a03abbc7cd1b66cccd3cb3836a1c586e5725f08c91502a7e4fb92e59
 47b4801580ab8cb964bd86e3a37aa96fd8840a3c764d1f6dfe0ec60fd36a979b5b84db060aebd9ca6e7564dcfe01e414242cc80e4bc0f0fd1faa5ca0bf2cdac4  interfaces
 a097a7ebfc11e0ec7723656ef1667e8e4e8b7ed307fd2ae11ff39aea26472a2529e4c45839926c0c9c5278d54e33deb7c07fc799452f0de0126cec5c693c4dee  wlan-defer.conf
 c3f32e88a85cde435532c9a2dc1f047fe352acfb974ebf0ea3c9024cb1d004adac339bc74d0f311a62c862153ad0f4776785f5487a1ce85a48b30cf111352701  biscuit-voice-venv.tar.gz
-e6702e4495d353aa5ed08b71cc7c6085878cc177fd0356e36fd00d0bbc34d4e7b83e220c9c24eb6e71a6d7658f4f6fb3e281a159c47002749978b89bfebb498a  biscuit-sendspin-venv.tar.gz
-6cc8102e64f8c21c385fc2cd7fdf707dc5b02922bceed06eb73af810bf686ede541354b418541592bb2f6f0a7837a4be82f1c95cb2527a3e0ececa430f5a180e  biscuit-sendspin.initd
+749749da40827920e40c38a1e4c03db1e4e2bb6ecc91c63426558469985641f94b7515db04beaefc9f87d5b51b1f56347829b82b418211ca47baa5d5b98120bf  biscuit-sendspin-venv.tar.gz
+7d578449792395167c3ce25d83b9a2b60e7aa767985bfc588cc8ab842002d3c1f4c7b7ef418a0bcd464bf4ec03404005e546139a8edd52d093fa3d181c568ec0  biscuit-sendspin.initd
 b5c24cfe5d75d5dbc3024dd09f67c6bb0e1f531d716cddd2de163eccbbccf19142f3a54d19b0a4011b19a9d35416e022de4c6e48833f76bbea562d3b8c6ec875  biscuit-sendspin-watchdog.sh
 13aa842ddcc869c93cd92614adc5e9583532c65cabeb917dea8c4820a05c399d88bb2df2e8e3914f3b8ecdc0fb405534ce5781a07cb76d6596ef78cfeb5960d3  biscuit-sendspin-watchdog.initd
 9c175690a836c505caffbfc1c2f68d2439c1d9712b390e53d305edd780279ccb2c9b460aa8d8e9ab6a4bbb1cce69189bd4f61f06d0f6f689c1849d3a497bbbe7  biscuit-sendspin-volume.sh
 5aec2adf532fa81c8bc072848bba677e0d955c7817e2ebe74c8d332778a9a2ecfb0629ca4a3e18ae5dcb74f66a1a6f9f4924b3d05af4328562dcb30f020fd359  biscuit-sendspin-stream.sh
-b1afde51f35eaa115fd8b0fcf38d633076eef4c36482c12316cdda154a8c25dd4142a851e87e8347b4a2db1ae0bf6ec7d639be0d8e69685ea4ff67642af52519  biscuit_sendspin_viz.py
-b82e4b7f02db22c49aea53e886beda23c2ac0ac6bd031850b35fc232cbcef6aed1f5228052f1e22198cb6afc87f357a7e9bc619b253a010edd4234ecbee03ce8  sendspin-visualizer-roles.diff
-432e916ba9ffbd2c7ac0337f095791045e0e4f216db6927604b5826fa5eb15382e87738dfd545015759d1c04c56bd86c4ccfd9b47ec2760af1e201aeb581151a  sendspin-media-commands.diff
-fc7584549ebf438f8c0b49ac4a5bd64612e4b7b917edc01456ccca89a9927bd9e1a60156daad1e698aca0a90e31f60d20f8abc518d9e19040c71e515190ca07e  sendspin-client-visualizer.diff
+c9060cd2e5120e2e331a94b83aa9eb8e1c66985f99efd6c240918c3c74093cb164aee80732ec4b14bfd415ed0d6b6627ac01267ef1ea3030c463fbaf9d72f5ff  biscuit_sendspin_viz.py
+cf834dc0d84a903511eb312b1a74a0997d64d22bbb1c92bae55c9332b4bdbc76b43a463b657022bb0e6e29de331d75d2e1be5922796a9f278b1047d73f768d11  sendspin-visualizer-roles.diff
+cd6da055b9d8256fdc056079480ca3bcc504096d3bda8a68506eae985f19c0cfb2891a972482ea6657df3156ec92654db19872f464818c56befe24bcdb492f77  sendspin-client-visualizer.diff
 7738da25ddb0b8aa2b74b31e7eeab31303955515df72c197e8b37fb4654fea7b31cc311fd5572bdf5ccd4b0c506fc7ad288b0b63bd5962754252336610190d6e  sendspin-volume-feedback.diff
 7e762d7b386eb4b2f91cb284cef89bce8ad46f64717cf7baef53e93673a60d07e3ee3624e90b3988cf6c29f90499df2d8c7e2c621ac3a8cddb82a7a270457049  sendspin-starved-silence.diff
 fbac9ff749ca8620cca6b92e50a2e8a890f799b98c4bd8dd2559a06831fa3ca47958427d4bfb692cfc5f8e1344177619c154d304441c7c472c7f6a056d9c7658  sendspin-stop-fade.diff
-0946104adeb1c05f1ccf3ffa63c1c7a198924f3c235723d94c301eef2a36da397ebc3c53037142dc7edfdf44d1abbaf7ed8e3bd806f42f3b4922244eb79759db  sendspin-media-control.diff
+790c49fa5ad14f002adf23f357b338d16b036d21cc89bec30455c5de19541538480b2ee3dcfbf819b258b3f8fc27fe386eea7876f7965ee3849f8a1f130a6075  sendspin-media-control.diff
 8e57e0a0bb909b6be7fdb2b121f8237d2f9d026c365d1c8930a3c86bdf1594a53ec88a8927dedd5db5260007c1a915a2a2ae068f7d5899fa9abbcb18b7bfcfef  biscuit-sendspin-server.py
 86a38319681429d0c69f62b04838814e7b625bf8e51862f96946dfb028b2fc947ab93bd567e455f5e50ee9df15914f803238ab2894890f6f4e4f73100dc902de  biscuit-lva-processed-mic-profile.patch.txt
 a856b17731c50bb3646c8a89e96f61301cf5a321dec669f9bf37c39cd9e30070e97ced8f45e87200489bb01c8809a9e2b9b7fa2ae8e2c30c0b18fd39c6eb2ca9  biscuit-lva-wake-agc-direct-input.patch.txt

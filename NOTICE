@@ -23,7 +23,7 @@ The full licence texts are in `LICENSES/`.
 | The kernel they apply to | GPL-2.0-only | `bengris32/linux-mtk`, branch `mt8163/7.0`, commit `20951722df6ae1f6fecbfcea0a7d585118a06f3f` (a 7.0-rc6 kernel), downloaded at build time |
 | `device/testing/linux-amazon-biscuit/mt6625l-wlan-20260823.tar.gz` | GPL-2.0 | MediaTek's MT6625L WLAN driver from Amazon's GPL kernel source release for the MT8163 (3.18 kernel), **modified** - see below |
 | `device/testing/device-amazon-biscuit/lva-src/*.py`, `biscuit-lva-*.patch.txt`, `biscuit-peripheral-*.patch.txt` | Apache-2.0 | OHF-Voice/linux-voice-assistant at `b0c53c41c11e`, **modified**; two files are new - see below |
-| `device/testing/device-amazon-biscuit/sendspin-*.diff` | Apache-2.0 | patches against Sendspin/sendspin-cli (`22b9ff308afe`) and aiosendspin 6.0.5 |
+| `device/testing/device-amazon-biscuit/sendspin-*.diff` | Apache-2.0 | patches against Sendspin/sendspin-cli 8.0.0 and aiosendspin 9.1.1 |
 | `device/testing/device-amazon-biscuit/btproxy/api_pb2.py`, `api_options_pb2.py` | MIT, Copyright (c) 2018 Otto Winter | copied unmodified from aioesphomeapi 45.3.1; full notice in `btproxy/__init__.py` |
 | `device/testing/device-amazon-biscuit/nacl-fast.min.js` | public domain (Unlicense) | TweetNaCl-js 1.0.3 (dchest/tweetnacl-js), unmodified |
 | The three bundle tarballs (`biscuit-voice-venv`, `biscuit-sendspin-venv`, `tflite-aarch64-musl`) | each component its own | see `PROVENANCE.md`, which lists every one |

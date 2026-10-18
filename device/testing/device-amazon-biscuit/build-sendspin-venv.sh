@@ -14,22 +14,28 @@
 # EXPECT IT TO TAKE ABOUT AN HOUR. Building av from source compiles roughly a
 # hundred Cython modules under qemu emulation; that single step is most of the
 # wall time.
+#
+# The 2026-10-18 tarball (sendspin 8.0.0) was built natively on an Echo with
+# these pins instead, with no chroot to hand: av 18.1.0 and sendspin._volume
+# were copied from the installed r300 venv (same versions, same source, same
+# Python and FFmpeg), everything else installed from PyPI as below.
 set -eu
 
 VENV=${VENV:-/tmp/sendspin-build/sendspin}
 OUT=${OUT:-/tmp/biscuit-sendspin-venv.tar.gz}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
-# The upstream CLI, pinned to the commit the shipped venv recorded in its
-# direct_url.json. This is UPSTREAM, not our fork: our changes are applied
-# afterwards by the .diff files in the APKBUILD's source=, not baked in here.
-SENDSPIN_REPO=https://github.com/Sendspin/sendspin-cli
-SENDSPIN_COMMIT=22b9ff308afedd86e51ea1b88ededa574c9244e5
+# The upstream CLI is pinned in sendspin-venv-requirements.txt (sendspin 8.0.0
+# from PyPI; until 2026-10-18 it was a git commit). This is UPSTREAM, not our
+# fork: our changes are applied afterwards by the .diff files in the
+# APKBUILD's source=, not baked in here. Its one C extension, sendspin._volume,
+# needs build-base and python3-dev below; without a compiler setup.py quietly
+# falls back to numpy, so check the .so is there.
 
 # tar is GNU tar: busybox tar has no --sort/--owner/--mtime for the
 # reproducible archive at the end.
 apk add --quiet python3 python3-dev py3-pip build-base pkgconf linux-headers \
-	ffmpeg-dev git tar gzip
+	ffmpeg-dev tar gzip
 
 rm -rf "$(dirname "$VENV")"
 mkdir -p "$(dirname "$VENV")"
@@ -46,8 +52,17 @@ python3 -m venv --system-site-packages "$VENV"
 # first means a later resolver pass cannot quietly swap the wheel back in.
 "$VENV"/bin/pip install --no-binary av "av==18.1.0"
 
-"$VENV"/bin/pip install -r "$HERE/sendspin-venv-requirements.txt"
-"$VENV"/bin/pip install "git+$SENDSPIN_REPO@$SENDSPIN_COMMIT"
+"$VENV"/bin/pip install --prefer-binary -r "$HERE/sendspin-venv-requirements.txt"
+# See the requirements file: aiohttp comes from the system, with its multidict.
+"$VENV"/bin/pip uninstall -y multidict 2>/dev/null || true
+ls "$VENV"/lib/python3.14/site-packages/sendspin/_volume.*.so > /dev/null
+
+# The venv is built here but runs from /usr/lib/sendspin: point the script
+# shebangs, activate scripts and pyvenv.cfg there, or bin/sendspin names an
+# interpreter that does not exist on the device.
+grep -rIl "$VENV" "$VENV" | while read -r f; do
+	sed -i "s#$VENV#/usr/lib/sendspin#g" "$f"
+done
 
 # Refuse to ship what this whole exercise removed.
 if [ -d "$VENV/lib/python3.14/site-packages/av.libs" ]; then

@@ -8,12 +8,12 @@ played and the ring stayed dark. Attach it the same way, once, before the
 client is used. The connection loop reuses this client across reconnects, so
 once is enough.
 
-Applied after sendspin-visualizer-roles.diff and sendspin-media-commands.diff,
-and generated against a tree with both applied.
+Applied after sendspin-visualizer-roles.diff and generated against a tree
+with it applied.
 
 --- a/sendspin/daemon/daemon.py
 +++ b/sendspin/daemon/daemon.py
-@@ -209,6 +209,7 @@
+@@ -233,6 +233,7 @@
          assert self._args.url is not None
          assert self._audio_handler is not None
          client = self._create_client()

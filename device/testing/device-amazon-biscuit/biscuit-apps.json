@@ -147,13 +147,13 @@
         {
           "name": "sendspin-cli",
           "url": "https://github.com/Sendspin/sendspin-cli",
-          "version": "commit 22b9ff3",
+          "version": "8.0.0",
           "license": "Apache-2.0"
         },
         {
           "name": "aiosendspin",
           "url": "https://pypi.org/project/aiosendspin/",
-          "version": "6.0.5",
+          "version": "9.1.1",
           "license": "Apache-2.0"
         }
       ],
@@ -165,10 +165,6 @@
         {
           "file": "sendspin-visualizer-roles.diff",
           "why": "Asks Music Assistant for the spectrum and track colours"
-        },
-        {
-          "file": "sendspin-media-commands.diff",
-          "why": "Accepts the seek commands Music Assistant sends; without it every status message was rejected"
         },
         {
           "file": "sendspin-client-visualizer.diff",

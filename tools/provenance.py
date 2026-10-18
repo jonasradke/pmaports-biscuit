@@ -166,8 +166,8 @@ FOREIGN = [
      "byte-identical to upstream"),
     ("`sendspin-*.diff`",
      "Apache-2.0",
-     "patches against Sendspin/sendspin-cli (22b9ff308afe) and aiosendspin "
-     "6.0.5"),
+     "patches against Sendspin/sendspin-cli 8.0.0 and aiosendspin "
+     "9.1.1"),
     ("`btproxy/api_pb2.py`, `btproxy/api_options_pb2.py`",
      "MIT",
      "aioesphomeapi 45.3.1, unmodified; Copyright (c) 2018 Otto Winter, full "
