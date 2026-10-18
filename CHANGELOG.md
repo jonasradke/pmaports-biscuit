@@ -8,6 +8,60 @@ Device software, with the build beside it. The kernel package,
 `linux-amazon-biscuit`, has its own `pkgrel`, and the three TWRP tool zips have
 their own version, printed first when they run.
 
+Releases of the jonasradke fork end in `-jr` and continue the build numbers
+from r299; they are built by GitHub Actions and served from the fork's own
+feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
+
+## v1.1.1-jr (build r300)
+
+| | Version |
+|---|---|
+| `device-amazon-biscuit` and subpackages | 6-r300 |
+| `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
+| `amazon-biscuit-backup.zip`, `-restore.zip`, `-stock-restore.zip` | v2 each: only their NOTICE changed |
+
+- The volume tick no longer goes quiet for a minute after boot. Its player
+  exits while PipeWire is still starting, and v1.1-jr took that for a sound
+  file it cannot play; it now retries every five seconds as before, and only
+  a file the player really refuses is handed to the older player.
+- The zips' NOTICE names the release that carries their source, this fork's
+  or the upstream project's, and the boot-deploy and bluez-alsa versions
+  actually built.
+- Documentation names the fork, its releases and where to report problems.
+
+## v1.1-jr (build r299) - the first release of the jonasradke fork
+
+| | Version |
+|---|---|
+| `device-amazon-biscuit` and subpackages | 6-r299 |
+| `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
+| `bluez-alsa` | 5.0.0-r0 (new: reports the A2DP delay to the phone) |
+| `boot-deploy` | 0.25.0-r1 (the MediaTek header fix on 0.25.0) |
+
+Everything in v1.0, plus the changes offered upstream as pull requests:
+
+- **Action button:** Play/pause, Next track and Previous track, for Music
+  Assistant and for a phone playing over Bluetooth. Previous always goes back
+  a track, even past the point where Music Assistant would restart the song.
+- **Voice:** music ducks while you speak and fades back up after the reply
+  has been heard; a voice run that never finishes no longer leaves the Echo
+  deaf; sounds play whole, without losing their start or end.
+- **Music Assistant speaker:** no clicks when a stream stalls, stops or
+  starts; volume changed on the Echo is reported back to Music Assistant.
+- **Bluetooth:** about 0.25 s from phone to speaker instead of about 0.8 s,
+  with the delay reported to the phone so video stays in sync; the phone's
+  volume and the Echo's are one volume.
+- **Volume keys** keep up with quick presses.
+- **Speaker:** the amplifier stays on, so there is no pop before each sound;
+  the dynamics no longer click at the end of a stream.
+- **Wi-Fi** joins dual-band networks on 5 GHz; the second-source TSL2540 light
+  sensor is supported.
+- **Updates** keep the start-up files gzip and install the boot image with
+  every update, and hold the patched boot-deploy.
+- **The fork itself:** built by GitHub Actions; the package ships the fork's
+  signing key and feed, and retires the upstream feed's line so an upstream
+  build can never replace the fork's packages.
+
 ## v1.0 (build r295) - the first public release
 
 Released 2026-09-30.

@@ -3,7 +3,7 @@ maintainer="jonasradke <me@jonasradke.com>"
 pkgname=device-amazon-biscuit
 pkgdesc="Amazon Echo Dot (2nd gen)"
 pkgver=6
-pkgrel=299
+pkgrel=300
 # The public release this build is: the name on the release page, the install
 # zip and the settings page. pkgrel is the build and keeps counting, because
 # apk orders upgrades by it and a release name like 1.0 would sort below the
@@ -12,7 +12,7 @@ pkgrel=299
 # given to another build (installer/zip/releases.json).
 # Releases of the jonasradke fork carry a "-jr" suffix, so they can never be
 # mistaken for, or collide with, an upstream release of the same number.
-_release="v1.1-jr"
+_release="v1.1.1-jr"
 url="https://github.com/jonasradke/pmaports-biscuit"
 # Core is our own code (MIT) plus two vendored pieces that keep their own
 # licences: TweetNaCl-js (public domain, Unlicense) for the setup and settings

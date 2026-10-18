@@ -74,7 +74,7 @@ LICENCE_FILES = ("LICENSE", "NOTICE", "COPYING.GPL-2.0")
 # The tool zips' versions. Bump one when build_zips refuses to build it: its
 # update-binary, common/functions.sh, bin/, the licence files or (backup)
 # assets.list changed.
-TOOL_VERSIONS = {"backup": 1, "restore": 1, "stock-restore": 1}
+TOOL_VERSIONS = {"backup": 2, "restore": 2, "stock-restore": 2}
 NAMES = {
     "install": "pmos-amazon-biscuit",
     "backup": "amazon-biscuit-backup",

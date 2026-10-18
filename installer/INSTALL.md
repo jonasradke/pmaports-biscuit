@@ -19,14 +19,16 @@ project's [GitHub releases](https://github.com/jonasradke/pmaports-biscuit/relea
 | `amazon-biscuit-restore.zip` | Puts this Echo's own files back into an installed postmarketOS |
 | `amazon-biscuit-stock-restore.zip` | Takes the Echo back to Fire OS 6 |
 
-- **vX.Y** is the release, for example `v1.0`. The settings page shows it as
-  **Device software**, with the build number beside it (`6-r295` for v1.0).
+- **vX.Y** is the release, for example `v1.1.1-jr`: this fork's releases end
+  in `-jr`, the upstream project's do not. The settings page shows it as
+  **Device software**, with the build number beside it (`6-r300` for
+  v1.1.1-jr).
 - The three tools have no number in their names: use the ones from the same
   release as the install zip. Each tool still has its own version, which
   changes only when that zip changes, so a release can carry the same tools as
   the one before.
 - Every zip prints its name and version first, for example
-  `amazon-biscuit-backup v1` or `pmos-amazon-biscuit v1.0`.
+  `amazon-biscuit-backup v2` or `pmos-amazon-biscuit v1.1.1-jr`.
 - `pmos-amazon-biscuit-vX.Y.zip` is this project's TWRP installer. It is not the
   recovery zip that pmbootstrap itself can build.
 - No zip contains any Amazon file. The firmware, microphone files, speaker curve,

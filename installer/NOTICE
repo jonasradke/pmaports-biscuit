@@ -29,8 +29,9 @@ bin/busybox is Alpine Linux's busybox-static package, unmodified:
                       e091bb0cd2852b3ed1e79e841de871bac4dc48d9bb1cef9309c3f8495aba0d00
 
 The complete corresponding source is published beside the zips on the
-project's GitHub release (https://github.com/liamtw22/pmaports-biscuit/releases),
-as the busybox source bundle:
+GitHub release that carries them (this fork's are at
+https://github.com/jonasradke/pmaports-biscuit/releases; the upstream project's at
+https://github.com/liamtw22/pmaports-biscuit/releases), as the busybox source bundle:
   busybox-1.38.0.tar.bz2                 the upstream source
   aports-main-busybox-768a1e87.tar.gz    Alpine's build recipe at that commit:
                                          APKBUILD, patches and busyboxconfig
@@ -362,10 +363,12 @@ in /lib/apk/db/installed: its exact version (the "V:" line), its licence (the
   postmarketOS       the APKBUILD for that version in postmarketOS's
   packages           pmaports, and the source files it names:
                      https://gitlab.postmarketos.org/postmarketOS/pmaports
-  this project's     https://github.com/liamtw22/pmaports-biscuit at tag
-  packages           rNNN: device-amazon-biscuit and its subpackages,
+  this project's     https://github.com/jonasradke/pmaports-biscuit at tag
+  packages           rNNN (or the upstream project's repository for its own
+                     releases): device-amazon-biscuit and its subpackages,
                      linux-amazon-biscuit (the Linux kernel, GPL-2.0) and its
-                     patches, and the patched boot-deploy 0.24.0-r1
+                     patches, bluez-alsa 5.0.0 (MIT) in temp/bluez-alsa, and
+                     the patched boot-deploy 0.25.0-r1
                      (GPL-2.0-or-later) in base-pmaports/. The kernel is also
                      a git tree, in https://github.com/liamtw22/linux-mtk
                      (branch biscuit-r<kernel release>).

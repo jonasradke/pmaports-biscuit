@@ -10,11 +10,14 @@ Amazon account and no cloud service are involved.
 repartitioning it, and either can brick the device. Read [Requirements](#requirements)
 and the installation guide before starting.
 
-> **This is the jonasradke fork** of [liamtw22/pmaports-biscuit](https://github.com/liamtw22/pmaports-biscuit).
-> Its releases carry a `-jr` suffix (`v1.1-jr`), are built by GitHub Actions
-> (`.github/workflows/build.yml`), and an Echo installed from one updates from
-> the fork's own signed feed, `https://jonasradke.github.io/pmaports-biscuit/edge`. Changes made here are offered upstream as
-> pull requests.
+> **This is the jonasradke fork** of [liamtw22/pmaports-biscuit](https://github.com/liamtw22/pmaports-biscuit),
+> the project that created this port. The fork's releases end in `-jr`
+> (`v1.1.1-jr`), are built from this repository by GitHub Actions, and an Echo
+> installed from one updates from the fork's own signed package feed,
+> `https://jonasradke.github.io/pmaports-biscuit/edge`. Fixes made here are
+> offered upstream as pull requests. [CHANGELOG.md](CHANGELOG.md) lists what
+> the fork adds; an Echo moved over from the upstream feed switches to the
+> fork's by itself after its first update.
 
 Not affiliated with Amazon. Echo and Alexa are trademarks of Amazon.com, Inc.
 or its affiliates.
@@ -196,4 +199,7 @@ This builds on the work of many people:
   SpeexDSP, and chrony for time.
 - **Settings page:** TweetNaCl-js.
 
-Maintained by liamtw22 and contributors.
+Created and maintained by liamtw22 and contributors
+([upstream](https://github.com/liamtw22/pmaports-biscuit)). This fork is maintained by
+[jonasradke](https://github.com/jonasradke); report problems with a fork
+release in this repository's [issues](https://github.com/jonasradke/pmaports-biscuit/issues).
