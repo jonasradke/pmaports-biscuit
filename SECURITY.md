@@ -100,9 +100,12 @@ rather than just read it, is not protected. Use it on a network you trust.
 
 ### The package feed
 
-The Echo installs updates from this project's signed package feed,
-`https://liamtw22.github.io/biscuit-apk/edge`. The feed's public key ships in
-the core package, and `apk` refuses an index not signed with it. The feed is
+The Echo installs updates from this fork's signed package feed,
+`https://jonasradke.github.io/pmaports-biscuit/edge`, signed in GitHub Actions
+with a key kept as a repository secret. The feed's public key
+(`biscuit-apk-jr.rsa.pub`) ships in the core package, and `apk` refuses an
+index not signed with it. An Echo moved over from the upstream project's feed
+has that feed's line removed at boot, so packages come from one place only. The feed is
 **on by default**: unless you turn it off, the feed line is put back into
 `/etc/apk/repositories` on every boot, and so is the key.
 
@@ -114,7 +117,7 @@ on again afterwards. Case and blanks in that file are ignored.
 - **To turn the feed off,** run `echo off | sudo tee /opt/persist/update-feed`.
   At the next boot the active feed line is removed once; a commented-out copy
   is left alone. Commenting the line out by hand
-  (`#https://liamtw22.github.io/biscuit-apk/edge`) is recorded as `off` at the
+  (`#https://jonasradke.github.io/pmaports-biscuit/edge`) is recorded as `off` at the
   next boot. Deleting the line without writing `off` does not turn the feed
   off: it comes back at the next boot.
 - **To turn it back on,** run `echo on | sudo tee /opt/persist/update-feed`.
