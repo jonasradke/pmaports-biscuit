@@ -1,0 +1,120 @@
+--- a/sendspin/audio.py
++++ b/sendspin/audio.py
+@@ -232,6 +232,13 @@
+         self._early_start_suspect: bool = False
+         self._has_reanchored: bool = False
+         self._force_reanchor: bool = True
++
++        # One-off shifts the audio callback applies at once: a static delay change,
++        # and the start error once the start-up grace has passed. Positive skips
++        # input (plays earlier), negative plays silence (plays later).
++        self._pending_shift_us: int = 0
++        self._pending_silence_frames: int = 0
++        self._start_corrected: bool = False
+ 
+         # Low-overhead drift/sync correction scheduling (sample drop/insert)
+         self._insert_every_n_frames: int = 0
+@@ -319,16 +326,22 @@
+     def apply_delay_change(self, delta_us: int) -> None:
+         """Adjust playback timing after a static delay change.
+ 
+-        Offsets the server timestamp cursor so the sync correction mechanism
+-        gradually speeds up or slows down playback to match the new delay.
++        The time conversions already include the new delay, so the DAC-derived
++        playback position moves by delta at once. Shifting the cursor as well
++        counted the change twice, and the re-anchor the doubled error then caused
++        relabelled the cursor instead of moving the audio, so a delay change
++        never reached the speaker. Instead the callback moves the audio once:
++        it skips input for a longer delay and plays silence for a shorter one.
+         This avoids clearing the audio buffer (which the server won't resend).
++        Before playback starts there is nothing to move: the start gating
++        already uses the new delay.
+ 
+         Args:
+             delta_us: Delay change in microseconds (positive = delay increased,
+-                audio should play earlier, cursor shifts back).
+-        """
+-        if self._server_ts_cursor_us > 0:
+-            self._server_ts_cursor_us -= delta_us
++                audio should play earlier).
++        """
++        if self._playback_state == PlaybackState.PLAYING:
++            self._pending_shift_us += delta_us
+ 
+     def is_drained(self) -> bool:
+         """Return True when the internal audio queue is empty.
+@@ -413,6 +426,9 @@
+         self._early_start_suspect = False
+         self._has_reanchored = False
+         self._force_reanchor = True
++        self._pending_shift_us = 0
++        self._pending_silence_frames = 0
++        self._start_corrected = False
+         self._insert_every_n_frames = 0
+         self._drop_every_n_frames = 0
+         self._frames_until_next_insert = 0
+@@ -498,6 +514,9 @@
+                     bytes_written += silence_bytes
+             else:
+                 frame_size = self._format.frame_size
++                bytes_written, frames = self._apply_pending_shift(
++                    output_buffer, bytes_written, frames
++                )
+ 
+                 # Thread-safe snapshot of correction schedule (prevent mid-callback changes)
+                 insert_every_n = self._insert_every_n_frames
+@@ -872,6 +891,38 @@
+             self._server_ts_cursor_remainder = self._server_ts_cursor_remainder % sr
+             self._server_ts_cursor_us += int(inc_us)
+ 
++    def _apply_pending_shift(
++        self, output_buffer: memoryview, bytes_written: int, frames: int
++    ) -> tuple[int, int]:
++        """Move playback by any pending shift; return (bytes_written, frames left to read).
++
++        A positive shift skips input, which advances the cursor with it; a negative
++        one plays silence without advancing the cursor, so the DAC-derived position
++        catches up with it. Either way the sync error is back near zero, and the
++        correction state starts over.
++        """
++        assert self._format is not None
++        shift_us = self._pending_shift_us
++        if shift_us:
++            self._pending_shift_us = 0
++            shift_frames = round(shift_us * self._format.sample_rate / 1_000_000)
++            if shift_frames > 0:
++                self._skip_input_frames(shift_frames)
++            elif shift_frames < 0:
++                self._pending_silence_frames += -shift_frames
++            self._sync_error_filter.reset()
++            self._sync_error_filtered_us = 0.0
++            self._insert_every_n_frames = 0
++            self._drop_every_n_frames = 0
++            logger.info("Moved playback by %.1f ms", shift_us / 1000.0)
++        if self._pending_silence_frames > 0 and frames > 0:
++            take = min(frames, self._pending_silence_frames)
++            num_bytes = take * self._format.frame_size
++            self._fill_silence(output_buffer, bytes_written, num_bytes)
++            self._pending_silence_frames -= take
++            return bytes_written + num_bytes, frames - take
++        return bytes_written, frames
++
+     def _skip_input_frames(self, frames_to_skip: int) -> None:
+         """Discard frames from the input to reduce buffer depth quickly."""
+         if self._format is None or frames_to_skip <= 0:
+@@ -1200,6 +1251,15 @@
+                 self._drop_every_n_frames = 0
+                 return
+ 
++        # Once the grace has passed, correct the start error in one step: the start
++        # lands tens of ms off, and at the 0.2% correction rate 40 ms took 20 s to
++        # work off, which is heard as an echo against the rest of the group.
++        if not self._start_corrected:
++            self._start_corrected = True
++            if abs_err > self._CORRECTION_DEADBAND_US:
++                self._pending_shift_us += int(self._sync_error_filtered_us)
++                return
++
+         # Do nothing within deadband
+         if abs_err <= self._CORRECTION_DEADBAND_US:
+             self._insert_every_n_frames = 0

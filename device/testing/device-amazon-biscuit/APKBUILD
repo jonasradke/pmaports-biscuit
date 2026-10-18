@@ -3,7 +3,7 @@ maintainer="jonasradke <me@jonasradke.com>"
 pkgname=device-amazon-biscuit
 pkgdesc="Amazon Echo Dot (2nd gen)"
 pkgver=6
-pkgrel=301
+pkgrel=302
 # The public release this build is: the name on the release page, the install
 # zip and the settings page. pkgrel is the build and keeps counting, because
 # apk orders upgrades by it and a release name like 1.0 would sort below the
@@ -284,6 +284,7 @@ source="
 	sendspin-starved-silence.diff
 	sendspin-stop-fade.diff
 	sendspin-media-control.diff
+	sendspin-delay-sync.diff
 	biscuit-sendspin-server.py
 	biscuit-lva-processed-mic-profile.patch.txt
 	biscuit-lva-wake-agc-direct-input.patch.txt
@@ -1238,6 +1239,13 @@ package() {
 	# Generated against the two daemon.py patches above, so it follows them.
 	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages \
 		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-media-control.diff )
+	# Static delay that reaches the speaker, and a start on time (r302): a
+	# delay change shifted the cursor on top of time conversions that already
+	# held it, and the re-anchor the doubled error caused relabelled the cursor
+	# instead of moving the audio, so Music Assistant's delay never changed the
+	# sound. Every stream also started some 40 ms off and worked it off at the
+	# 0.2% correction limit, 2 ms a second. Both are now one immediate shift.
+	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages 		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-delay-sync.diff )
 	# Apache-2.0 4(b): a file we changed says so, at the top where it is seen.
 	for _f in sendspin/daemon/daemon.py sendspin/cli.py sendspin/hook_volume.py \
 			sendspin/audio.py; do
@@ -1548,6 +1556,7 @@ cd6da055b9d8256fdc056079480ca3bcc504096d3bda8a68506eae985f19c0cfb2891a972482ea66
 7e762d7b386eb4b2f91cb284cef89bce8ad46f64717cf7baef53e93673a60d07e3ee3624e90b3988cf6c29f90499df2d8c7e2c621ac3a8cddb82a7a270457049  sendspin-starved-silence.diff
 fbac9ff749ca8620cca6b92e50a2e8a890f799b98c4bd8dd2559a06831fa3ca47958427d4bfb692cfc5f8e1344177619c154d304441c7c472c7f6a056d9c7658  sendspin-stop-fade.diff
 790c49fa5ad14f002adf23f357b338d16b036d21cc89bec30455c5de19541538480b2ee3dcfbf819b258b3f8fc27fe386eea7876f7965ee3849f8a1f130a6075  sendspin-media-control.diff
+91a61960a7c08cc4bfc232ded44e126e3a585f0433c27575f9e07df2873958055297e15725ba0dc78c6b648c8c2b8b928165bd2ac9fa3884a435963b6a53abbd  sendspin-delay-sync.diff
 8e57e0a0bb909b6be7fdb2b121f8237d2f9d026c365d1c8930a3c86bdf1594a53ec88a8927dedd5db5260007c1a915a2a2ae068f7d5899fa9abbcb18b7bfcfef  biscuit-sendspin-server.py
 86a38319681429d0c69f62b04838814e7b625bf8e51862f96946dfb028b2fc947ab93bd567e455f5e50ee9df15914f803238ab2894890f6f4e4f73100dc902de  biscuit-lva-processed-mic-profile.patch.txt
 a856b17731c50bb3646c8a89e96f61301cf5a321dec669f9bf37c39cd9e30070e97ced8f45e87200489bb01c8809a9e2b9b7fa2ae8e2c30c0b18fd39c6eb2ca9  biscuit-lva-wake-agc-direct-input.patch.txt
