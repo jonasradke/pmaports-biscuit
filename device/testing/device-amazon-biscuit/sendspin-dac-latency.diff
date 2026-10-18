@@ -1,0 +1,92 @@
+--- a/sendspin/audio.py
++++ b/sendspin/audio.py
+@@ -10,6 +10,7 @@
+ import collections
+ import concurrent.futures
+ import logging
++import os
+ import queue
+ import threading
+ import time
+@@ -48,6 +49,8 @@
+ 
+     outputBufferDacTime: float  # noqa: N815
+     """DAC time when the output buffer will be played (in seconds)."""
++    currentTime: float  # noqa: N815
++    """Stream time when the callback was invoked (in seconds), the clock of outputBufferDacTime."""
+ 
+ 
+ class PlaybackState(Enum):
+@@ -189,6 +192,17 @@
+         self._muted: bool = False
+ 
+         self._output_latency_us: int = 0
++        # Output latency added after the audio device, which it cannot report:
++        # on the Echo Dot, biscuit-dsp takes the audio from PipeWire through a
++        # loopback cable and holds it before the speaker. The device publishes
++        # its measured value (microseconds) in the file this names; nothing here
++        # assumes a number. Re-read once a second, from the worker thread.
++        self._extra_latency_path: str | None = (
++            os.environ.get("SENDSPIN_EXTRA_OUTPUT_LATENCY_FILE") or None
++        )
++        self._extra_output_latency_us: int = 0
++        self._extra_latency_read_at: float = 0.0
++        self._refresh_extra_latency()
+ 
+         # Partial chunk tracking (to avoid discarding partial chunks)
+         self._current_chunk: _QueuedChunk | None = None
+@@ -322,6 +336,23 @@
+         """
+         self._volume = max(0, min(100, volume))
+         self._muted = muted
++
++    def _refresh_extra_latency(self) -> None:
++        """Re-read the latency added after the audio device, at most once a second."""
++        if self._extra_latency_path is None:
++            return
++        now = time.monotonic()
++        if now - self._extra_latency_read_at < 1.0:
++            return
++        self._extra_latency_read_at = now
++        try:
++            with open(self._extra_latency_path, encoding="ascii") as f:
++                value = max(0, int(f.read().strip()))
++        except (OSError, ValueError):
++            return  # not published (yet): keep the last value
++        if value != self._extra_output_latency_us:
++            logger.info("Output latency after the audio device: %.1f ms", value / 1000.0)
++            self._extra_output_latency_us = value
+ 
+     def apply_delay_change(self, delta_us: int) -> None:
+         """Adjust playback timing after a static delay change.
+@@ -637,8 +668,21 @@
+             dac_time_us = int(time.outputBufferDacTime * 1_000_000)
+             loop_time_us = self._now_us()
+ 
++            # Pair the loop clock with the stream clock's now (currentTime), not with
++            # the DAC time of the buffer being filled: that lies the output latency
++            # ahead, and pairing it with now treated "reaches the DAC" as "now", so
++            # the player played late by all the latency the device reports (106 ms
++            # on the Echo: PipeWire and its loopback cable). A backend without a
++            # usable currentTime keeps the old pairing. Sound that leaves later still
++            # than its DAC time - processing after the device - is the extra latency.
++            current_us = int(getattr(time, "currentTime", 0.0) * 1_000_000)
++            if current_us <= 0 or not 0 <= dac_time_us - current_us <= 2_000_000:
++                current_us = dac_time_us
++
+             # Store complete calibration pair atomically
+-            self._dac_loop_calibrations.append((dac_time_us, loop_time_us))
++            self._dac_loop_calibrations.append(
++                (current_us - self._extra_output_latency_us, loop_time_us)
++            )
+             self._last_dac_calibration_time_us = loop_time_us
+ 
+             # Update playback position in server time using latest calibration
+@@ -1316,6 +1360,7 @@
+         """
+         if self._closed:
+             return
++        self._refresh_extra_latency()
+ 
+         # Handle deferred operations from audio thread
+         if self._clear_requested:

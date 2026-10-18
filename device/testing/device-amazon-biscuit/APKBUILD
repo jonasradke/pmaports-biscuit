@@ -3,7 +3,7 @@ maintainer="jonasradke <me@jonasradke.com>"
 pkgname=device-amazon-biscuit
 pkgdesc="Amazon Echo Dot (2nd gen)"
 pkgver=6
-pkgrel=302
+pkgrel=303
 # The public release this build is: the name on the release page, the install
 # zip and the settings page. pkgrel is the build and keeps counting, because
 # apk orders upgrades by it and a release name like 1.0 would sort below the
@@ -285,6 +285,7 @@ source="
 	sendspin-stop-fade.diff
 	sendspin-media-control.diff
 	sendspin-delay-sync.diff
+	sendspin-dac-latency.diff
 	biscuit-sendspin-server.py
 	biscuit-lva-processed-mic-profile.patch.txt
 	biscuit-lva-wake-agc-direct-input.patch.txt
@@ -1246,6 +1247,13 @@ package() {
 	# sound. Every stream also started some 40 ms off and worked it off at the
 	# 0.2% correction limit, 2 ms a second. Both are now one immediate shift.
 	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages 		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-delay-sync.diff )
+	# The whole output latency, measured (r303): the player paired the loop
+	# clock with the DAC time of the buffer being filled instead of the stream
+	# clock's now, so it played late by all the latency ALSA reports (106 ms:
+	# PipeWire and the loopback cable). And biscuit-dsp's own part, past the
+	# cable, is now read from the file biscuit-dsp keeps current - see
+	# SENDSPIN_EXTRA_OUTPUT_LATENCY_FILE in biscuit-sendspin.initd.
+	( cd "$pkgdir"/usr/lib/sendspin/lib/python3.14/site-packages 		&& patch -p1 --fuzz=0 < "$srcdir"/sendspin-dac-latency.diff )
 	# Apache-2.0 4(b): a file we changed says so, at the top where it is seen.
 	for _f in sendspin/daemon/daemon.py sendspin/cli.py sendspin/hook_volume.py \
 			sendspin/audio.py; do
@@ -1471,7 +1479,7 @@ ceb146692bdddb9c3021350c77259d82788ee5ece26b22cf57d7eefed3fd3fcb602125d77b453674
 c526b40ab01168a38d756079facc022792ada1a145c90ba3177aa33d4dd075cf387f152da3094909d5a483a25f7edf0c0c3f91bd2c2f661fabc0f37a89ffd878  biscuit-settings.initd
 735f9d33114a39af242e8bb8093f0c1db0338034fa6901a19b9c6ea334c5753c3f20fe10bc5a639433f4b398afb360212eedad5e05609a7398fffc37fdd28f16  biscuit-btid.initd
 89f307f516e9f05ba1ef0d0e84d7d66aa537f818fd515a4094c074d4fea5f43fa12baeb80971eacd1bb64ca3848b4025a1673827d19f1abf906ec2504ee426d1  biscuit-setup.initd
-ecc635a8ff8c16d6e4ee58478db7ed34b387094210d464100f2bc289bf584d34cb54358497a7a3c7ca321acd58d3eae2f96e53559b53689a0a37afa8548fe420  biscuit-dsp.c
+1c4902cb0e0c277bd771dcbc65b2d77d19720097fd8b9a07fc5a03f33e49c60abb62599d9c15b64da02fd998385e256903e467a2cd4109205f9af8768efd4c04  biscuit-dsp.c
 9c2c4723c008e182bb9361d8d243cb0fb2247034c43207224a6c21484db485b8004096f62b8874b1bed60012ac52f94647bc90001d1201a9750b26c7d2c21e17  biscuit-dsp.initd
 80f72086c9b08a933dd4782e23b3296722b9f49b033f134054a85c5400f976688f42c50df8edf8196588fac7ed97fe044b19534064257ffe32efc1b7403f8095  biscuit-tick.c
 adf094d4b4b203bcff1cce17d28b8acb678b0b07faf831f247d241ad67cd4346500bc4a582a5d25a3bdfa7948a72fc16e48c20af4de97e93297787a74818d0ca  biscuit-mic-coeff.py
@@ -1544,7 +1552,7 @@ e53d49b335da2e1255424392a03abbc7cd1b66cccd3cb3836a1c586e5725f08c91502a7e4fb92e59
 a097a7ebfc11e0ec7723656ef1667e8e4e8b7ed307fd2ae11ff39aea26472a2529e4c45839926c0c9c5278d54e33deb7c07fc799452f0de0126cec5c693c4dee  wlan-defer.conf
 c3f32e88a85cde435532c9a2dc1f047fe352acfb974ebf0ea3c9024cb1d004adac339bc74d0f311a62c862153ad0f4776785f5487a1ce85a48b30cf111352701  biscuit-voice-venv.tar.gz
 749749da40827920e40c38a1e4c03db1e4e2bb6ecc91c63426558469985641f94b7515db04beaefc9f87d5b51b1f56347829b82b418211ca47baa5d5b98120bf  biscuit-sendspin-venv.tar.gz
-7d578449792395167c3ce25d83b9a2b60e7aa767985bfc588cc8ab842002d3c1f4c7b7ef418a0bcd464bf4ec03404005e546139a8edd52d093fa3d181c568ec0  biscuit-sendspin.initd
+a6259e4a358f4aee51455b136d7ecbae7f1f19cddfecf74e6b273719c9a4ce259bc8e191f9d1c6cfaa7462b8fb0df51cde65a0bec46b095f0e403b795d6f9319  biscuit-sendspin.initd
 b5c24cfe5d75d5dbc3024dd09f67c6bb0e1f531d716cddd2de163eccbbccf19142f3a54d19b0a4011b19a9d35416e022de4c6e48833f76bbea562d3b8c6ec875  biscuit-sendspin-watchdog.sh
 13aa842ddcc869c93cd92614adc5e9583532c65cabeb917dea8c4820a05c399d88bb2df2e8e3914f3b8ecdc0fb405534ce5781a07cb76d6596ef78cfeb5960d3  biscuit-sendspin-watchdog.initd
 9c175690a836c505caffbfc1c2f68d2439c1d9712b390e53d305edd780279ccb2c9b460aa8d8e9ab6a4bbb1cce69189bd4f61f06d0f6f689c1849d3a497bbbe7  biscuit-sendspin-volume.sh
@@ -1557,6 +1565,7 @@ cd6da055b9d8256fdc056079480ca3bcc504096d3bda8a68506eae985f19c0cfb2891a972482ea66
 fbac9ff749ca8620cca6b92e50a2e8a890f799b98c4bd8dd2559a06831fa3ca47958427d4bfb692cfc5f8e1344177619c154d304441c7c472c7f6a056d9c7658  sendspin-stop-fade.diff
 790c49fa5ad14f002adf23f357b338d16b036d21cc89bec30455c5de19541538480b2ee3dcfbf819b258b3f8fc27fe386eea7876f7965ee3849f8a1f130a6075  sendspin-media-control.diff
 91a61960a7c08cc4bfc232ded44e126e3a585f0433c27575f9e07df2873958055297e15725ba0dc78c6b648c8c2b8b928165bd2ac9fa3884a435963b6a53abbd  sendspin-delay-sync.diff
+de3f430222dac6ad83283b6c60b48a9969a3b15863091bc80540129c42c2c1cc8bca1c6a81efa4a4162401af21f2970672ea278f111c51f3ca553197d2ea6a34  sendspin-dac-latency.diff
 8e57e0a0bb909b6be7fdb2b121f8237d2f9d026c365d1c8930a3c86bdf1594a53ec88a8927dedd5db5260007c1a915a2a2ae068f7d5899fa9abbcb18b7bfcfef  biscuit-sendspin-server.py
 86a38319681429d0c69f62b04838814e7b625bf8e51862f96946dfb028b2fc947ab93bd567e455f5e50ee9df15914f803238ab2894890f6f4e4f73100dc902de  biscuit-lva-processed-mic-profile.patch.txt
 a856b17731c50bb3646c8a89e96f61301cf5a321dec669f9bf37c39cd9e30070e97ced8f45e87200489bb01c8809a9e2b9b7fa2ae8e2c30c0b18fd39c6eb2ca9  biscuit-lva-wake-agc-direct-input.patch.txt

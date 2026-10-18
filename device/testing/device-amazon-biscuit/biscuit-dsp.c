@@ -165,6 +165,12 @@ static struct er_writer *render_reference;
  * and nothing here delays them. Replaced atomically, so a reader never sees a
  * partial word. */
 #define AMP_STATE     "/run/biscuit-dsp/amp"
+/* The output latency this process adds, in microseconds, for players that
+ * cannot see past the loopback cable. Sendspin's player sees PipeWire and the
+ * cable through ALSA, and nothing of what happens here; without this it played
+ * every sample this much late against the rest of a group. Measured, not
+ * configured: see note_latency(). */
+#define LATENCY_STATE "/run/biscuit-dsp/latency_us"
 #define AMP_READY_S   0.30         /* 250 ms delay + 25 ms warm-up + margin */
 /* The speaker correction curve, in the order it is looked for:
  *
@@ -1094,6 +1100,61 @@ static int amp_state = -1;         /* 0 off, 1 warming, 2 ready */
 static double amp_opened_at;
 static double hold_retry_at;     /* next attempt to hold the codec open */
 
+/* Latency of one sample through this process: what is still queued on the
+ * loopback capture side when its period is read, plus what is queued for the
+ * codec once that period is written, plus the processing delay - the
+ * correction FIR's main tap and, with the limiters on, the band limiters' and
+ * the final limiter's look-ahead lines. The queues are sampled after every
+ * write and averaged over a second; the file is rewritten atomically, like the
+ * amp state, and only when the value changes. */
+static double lat_frames_sum;
+static long lat_samples;
+static double lat_published_at;
+static long lat_published_us = -1;
+
+static int fir_main_tap(const engine *e)
+{
+	int best = 0;
+	float peak = 0.0f;
+	for (int i = 0; i < FIR_TAPS; i++) {
+		float a = fabsf(e->fir[i]);
+		if (a > peak) {
+			peak = a;
+			best = i;
+		}
+	}
+	return best;
+}
+
+static void note_latency(const engine *e, snd_pcm_t *in, snd_pcm_t *out)
+{
+	snd_pcm_sframes_t queued_in = 0, queued_out = 0;
+	if (snd_pcm_delay(out, &queued_out) < 0 || queued_out < 0)
+		return;
+	if (snd_pcm_delay(in, &queued_in) < 0 || queued_in < 0)
+		queued_in = 0;
+	lat_frames_sum += (double)queued_in + (double)queued_out;
+	lat_samples++;
+
+	double now = now_monotonic();
+	if (now - lat_published_at < 1.0)
+		return;
+	lat_published_at = now;
+	double frames = lat_frames_sum / (double)lat_samples
+		+ fir_main_tap(e) + (e->mbcl_bypass ? 0 : 2 * LOOKAHEAD);
+	lat_frames_sum = 0.0;
+	lat_samples = 0;
+	long us = lround(frames * 1e6 / RATE);
+	if (us == lat_published_us)
+		return;
+	FILE *f = fopen(LATENCY_STATE ".tmp", "w");
+	if (!f)
+		return;
+	fprintf(f, "%ld\n", us);
+	if (fclose(f) == 0 && rename(LATENCY_STATE ".tmp", LATENCY_STATE) == 0)
+		lat_published_us = us;
+}
+
 static void set_amp_state(int state)
 {
 	static const char *const names[] = { "off", "warming", "ready" };
@@ -1450,6 +1511,8 @@ int main(int argc, char **argv)
 
 		snd_pcm_sframes_t put = snd_pcm_writei(out, ibuf, got);
 		if (put>0) er_writer_push(render_reference,ibuf,(unsigned)put);
+		if (put > 0)
+			note_latency(e, in, out);
 		if (put < 0) {
 			if (put == -EPIPE || put == -ESTRPIPE) {
 				xruns_out++;
@@ -1472,6 +1535,7 @@ int main(int argc, char **argv)
 	if (ctrl >= 0) close(ctrl);
 	unlink(CTRL_FIFO);
 	unlink(AMP_STATE);
+	unlink(LATENCY_STATE);
 	er_writer_close(render_reference);
 	free(ibuf);
 	free(mono);

@@ -91,8 +91,12 @@ export PULSE_RUNTIME_PATH=/run/pipewire/pulse
 # nodes at all, so the device list comes back empty. Verified by hand: with
 # these two variables set, both "default" and "pipewire" open cleanly.
 command="/usr/bin/env"
+# SENDSPIN_EXTRA_OUTPUT_LATENCY_FILE: biscuit-dsp sits between PipeWire and the
+# speaker, behind the loopback cable, where the player's ALSA view ends. It
+# publishes the latency it adds, measured from its own queues, and the player
+# (sendspin-dac-latency.diff) adds it to what ALSA reports. No number here.
 
-command_args="XDG_RUNTIME_DIR=/run/pipewire PULSE_RUNTIME_PATH=/run/pipewire/pulse /usr/lib/sendspin/bin/sendspin daemon --name ${SENDSPIN_NAME} --audio-device ${SENDSPIN_AUDIO_DEVICE} --log-level ${SENDSPIN_LOG_LEVEL}${SENDSPIN_AUDIO_FORMAT:+ --audio-format ${SENDSPIN_AUDIO_FORMAT}} --settings-dir /opt/persist/sendspin --unpaired-access true --hook-set-volume /usr/bin/biscuit-sendspin-volume --hook-volume-state /run/biscuit-audio/volume --hook-start '/usr/bin/biscuit-sendspin-stream start' --hook-stop '/usr/bin/biscuit-sendspin-stream stop' --manufacturer '${SENDSPIN_MANUFACTURER}' --product-name '${SENDSPIN_PRODUCT}'"
+command_args="XDG_RUNTIME_DIR=/run/pipewire PULSE_RUNTIME_PATH=/run/pipewire/pulse SENDSPIN_EXTRA_OUTPUT_LATENCY_FILE=/run/biscuit-dsp/latency_us /usr/lib/sendspin/bin/sendspin daemon --name ${SENDSPIN_NAME} --audio-device ${SENDSPIN_AUDIO_DEVICE} --log-level ${SENDSPIN_LOG_LEVEL}${SENDSPIN_AUDIO_FORMAT:+ --audio-format ${SENDSPIN_AUDIO_FORMAT}} --settings-dir /opt/persist/sendspin --unpaired-access true --hook-set-volume /usr/bin/biscuit-sendspin-volume --hook-volume-state /run/biscuit-audio/volume --hook-start '/usr/bin/biscuit-sendspin-stream start' --hook-stop '/usr/bin/biscuit-sendspin-stream stop' --manufacturer '${SENDSPIN_MANUFACTURER}' --product-name '${SENDSPIN_PRODUCT}'"
 command_background=true
 pidfile="/run/${RC_SVCNAME}.pid"
 output_log="/var/log/sendspin.log"
