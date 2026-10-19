@@ -37,11 +37,15 @@ trap 'rm -rf "$T"' EXIT
 B="$T/$NAME"
 mkdir -p "$B/linux-amazon-biscuit" "$OUT"
 
-# The upstream archive and prepare-tree.sh from the upstream bundle.
-tar xzf "$UPSTREAM" -C "$T" --wildcards "*/$ARCHIVE" "*/prepare-tree.sh"
-mv "$T"/linux-amazon-biscuit-r243-source/"$ARCHIVE" "$B/"
+# The upstream archive and prepare-tree.sh from the upstream bundle, unpacked
+# apart from the bundle being built: for kernel r243 both are called
+# linux-amazon-biscuit-r243-source, and moving a file onto itself fails.
+U="$T/upstream"
+mkdir "$U"
+tar xzf "$UPSTREAM" -C "$U" --wildcards "*/$ARCHIVE" "*/prepare-tree.sh"
+mv "$U"/linux-amazon-biscuit-r243-source/"$ARCHIVE" "$B/"
 sed "s/linux-amazon-biscuit r243 kernel/linux-amazon-biscuit r$pkgrel kernel/" \
-	"$T"/linux-amazon-biscuit-r243-source/prepare-tree.sh > "$B/prepare-tree.sh"
+	"$U"/linux-amazon-biscuit-r243-source/prepare-tree.sh > "$B/prepare-tree.sh"
 [ "$(sha512sum "$B/$ARCHIVE" | cut -d' ' -f1)" = \
   "$(sed -n "s/^\([0-9a-f]\{128\}\)  $ARCHIVE\$/\1/p" "$PKG/APKBUILD")" ] ||
 	die "$ARCHIVE does not match the APKBUILD's sha512"
