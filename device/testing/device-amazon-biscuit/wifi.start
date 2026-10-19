@@ -152,6 +152,45 @@ load_driver() {
 	return 1
 }
 
+# Connect the antenna before the driver loads.
+#
+# GPIO85/86 are ANT_SEL0/1, the control lines of the RF switch in front of the
+# MT6625L. Nothing sets them, so they sit at reset - inputs, pulled down - and
+# the switch at 00 connects neither throw: every band then reaches the radio
+# only by leakage, about 30 dB down. On the same spot, two metres from the AP
+# through one wooden wall:
+#
+#	ANT_SEL1/0	2.4 GHz	5 GHz
+#	00		-84	-93	(nothing set)
+#	01		-76	-73
+#
+# so a dual-band network was always joined on 2.4 GHz. Holding 01 is set
+# here, after the kernel's WMT bootstrap and its RF calibration and before the
+# Wi-Fi image is loaded: the same state set this late ran for hours, while a
+# device-tree pin hog applying it during early boot (kernel r244, never
+# released) had the watchdog reset the Echo about a minute after every
+# power-on. gpioset holds the two lines for the rest of the uptime, under the
+# consumer name wifi-ant-sel; a second run of this script finds them held.
+ANT_CHIP=gpiochip0
+
+connect_antenna() {
+	if ! command -v gpioset >/dev/null 2>&1; then
+		log "antenna: gpioset not installed, antenna switch left open"
+		return 0
+	fi
+	if gpioinfo -c "$ANT_CHIP" 85 86 2>/dev/null | grep -q 'consumer="wifi-ant-sel"'; then
+		return 0
+	fi
+	if gpioset -c "$ANT_CHIP" -C wifi-ant-sel -z 85=1 86=0 2>/dev/null; then
+		log "antenna: switch connected (ANT_SEL1/0 = 01)"
+	else
+		log "antenna: could not set ANT_SEL0/1, antenna switch left open"
+	fi
+	return 0
+}
+
+connect_antenna
+
 load_driver || {
 	log "$IFACE never appeared; power cycle required"
 	ring "play $WIFI_ERR_ANIM 4"
