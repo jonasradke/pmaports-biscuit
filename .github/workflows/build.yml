@@ -139,12 +139,18 @@ jobs:
           RELEASE: ${{ needs.build.outputs.release }}
           BUILD: ${{ needs.build.outputs.build }}
         run: |
-          # The kernel and BusyBox are upstream's, unchanged: carry their
-          # corresponding source as upstream's release does (installer/NOTICE).
-          mkdir -p sources
+          # BusyBox is upstream's, unchanged: carry its corresponding source
+          # as upstream's release does (installer/NOTICE). The kernel's is
+          # built from this tree and the kernel just built, on top of the
+          # upstream archive in upstream's r243 bundle.
+          mkdir -p sources upstream
           gh release download v1.0 -R liamtw22/pmaports-biscuit -D sources \
-            -p 'linux-amazon-biscuit-*-source.tar.gz' -p 'busybox-*.tar.bz2' \
+            -p 'busybox-*.tar.bz2' \
             -p 'aports-main-busybox-*.tar.gz' -p 'busybox-static-*.apk'
+          gh release download v1.0 -R liamtw22/pmaports-biscuit -D upstream \
+            -p 'linux-amazon-biscuit-r243-source.tar.gz'
+          sh tools/ci/kernel-source.sh upstream/linux-amazon-biscuit-r243-source.tar.gz \
+            dist/apk/linux-amazon-biscuit-*.apk sources
           cat > notes.md <<EOF
           Build $BUILD of the [jonasradke fork](https://github.com/$GITHUB_REPOSITORY) of the
           postmarketOS port for the Amazon Echo Dot 2. Install with the zips as

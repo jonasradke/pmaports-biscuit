@@ -369,9 +369,10 @@ in /lib/apk/db/installed: its exact version (the "V:" line), its licence (the
                      linux-amazon-biscuit (the Linux kernel, GPL-2.0) and its
                      patches, bluez-alsa 5.0.0 (MIT) in temp/bluez-alsa, and
                      the patched boot-deploy 0.25.0-r1
-                     (GPL-2.0-or-later) in base-pmaports/. The kernel is also
-                     a git tree, in https://github.com/liamtw22/linux-mtk
-                     (branch biscuit-r<kernel release>).
+                     (GPL-2.0-or-later) in base-pmaports/. Kernel r243 is
+                     also a git tree, in https://github.com/liamtw22/linux-mtk
+                     (branch biscuit-r243); later kernels are that tree plus
+                     the patches after 0124.
 
 The same GitHub release as the zips carries the complete source of the
 kernel in the image, as linux-amazon-biscuit-r<kernel release>-source.tar.gz,
