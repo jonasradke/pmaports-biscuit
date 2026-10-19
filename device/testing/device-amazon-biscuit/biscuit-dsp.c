@@ -23,6 +23,16 @@
  *       -> 4-band MBCL    compressor + per-band limiter
  *       -> full-band limiter at -0.1 dBFS
  *
+ * LINE OUT. All of the above except the user EQ and the full-band limiter is
+ * there for the Echo's own small driver. When the codec's "Output Select" is
+ * on Headphones - the 3.5 mm jack, typically an external amplified speaker -
+ * the correction curve, the volume push and the four bands are skipped: the
+ * correction is +26.6 dB at 170 Hz for a driver that is not connected, and
+ * band 1's 20:1 compression from -50 dBFS takes the bass of a real speaker
+ * away. The jack keeps the user EQ, the limiter as clip protection and the
+ * volume taper, so the volume law and Home Assistant's EQ are unchanged.
+ * Output Select is read twice a second; the published latency follows.
+ *
  * THERE IS ONLY ONE CORRECTION CURVE. Stock ships six per-volume EQ files and
  * they look like per-volume voicing. They are not: measured, all four distinct
  * files are the SAME magnitude shape to within 0.000 dB, differing only by a
@@ -190,6 +200,10 @@ static struct er_writer *render_reference;
 #endif
 #define USER_EQ_CONF  "/etc/biscuit/user-eq.conf"
 #define MBCL_CONF     "/etc/biscuit/mbcl.conf"
+/* This speaker's level against others playing the same stream: a plain
+ * attenuation, applied with the volume taper after the limiter, so it
+ * changes loudness and nothing else. "level_db = -6" - 0 dB to -40 dB. */
+#define LEVEL_CONF    "/etc/biscuit/level.conf"
 
 /* Stock's per-volume push, measured from its own EQ files and expressed
  * relative to the <=70 curve (EQ_50.cfg). Editable at
@@ -403,6 +417,7 @@ typedef struct {
 
 	/* MBCL */
 	int      mbcl_bypass;
+	int      line_out;           /* Output Select = Headphones: see LINE OUT */
 	biquad   split[3][2];        /* 2nd-order Butterworth, cascaded pairs */
 	biquad   split_ap[3];        /* AP2 matching each LR4 split */
 	/* Phase-alignment allpasses.  A biquad carries state, so each of these
@@ -418,6 +433,7 @@ typedef struct {
 	float    in_gain;
 	float    post_gain;          /* final stock-match loudness trim */
 	float    vol_post, vol_post_target;  /* volume taper, applied after the limiter */
+	float    level_db;           /* LEVEL_CONF, folded into vol_post_target */
 	int      vol_after_lim;
 
 	int volume;
@@ -524,6 +540,25 @@ static void load_curves(engine *e)
 	else
 		logmsg("eq: no factory curve imported (%s) - playing flat",
 		       EQ_FACTORY_CURVE);
+}
+
+static void load_level(engine *e)
+{
+	float db = 0.0f;
+	FILE *f = fopen(LEVEL_CONF, "r");
+	if (f) {
+		char line[128];
+		float v;
+		while (fgets(line, sizeof line, f))
+			if (sscanf(line, " level_db = %f", &v) == 1)
+				db = v;
+		fclose(f);
+	}
+	if (!(db <= 0.0f)) db = 0.0f;        /* also catches NaN */
+	if (db < -40.0f) db = -40.0f;
+	if (db != e->level_db)
+		logmsg("level: %+.1f dB", db);
+	e->level_db = db;
 }
 
 /* user-eq.conf:  peak <freq_hz> <q> <gain_db>   (one per line) */
@@ -744,7 +779,7 @@ static void set_volume(engine *e, int vol)
 	float prev_post = e->vol_post_target;
 	float db = push_for_volume(vol, e->vol_after_lim);
 	e->vol_post_target = e->vol_after_lim
-		? db_to_lin(volume_taper_db(vol)) : 1.0f;
+		? db_to_lin(volume_taper_db(vol) + e->level_db) : db_to_lin(e->level_db);
 	if (e->vol_after_lim && vol <= 0)
 		e->vol_post_target = 0.0f;
 	float want = db_to_lin(db);
@@ -855,12 +890,13 @@ static void process(engine *e, float *buf, int frames)
 		e->hist[e->hpos] = x;
 		e->hist[e->hpos + FIR_TAPS] = x;
 
-		float y = fir_apply(e, e->hpos + FIR_TAPS);
+		float y = e->line_out ? x : fir_apply(e, e->hpos + FIR_TAPS);
 
 		/* Volume push, slewed. Stepping it would click, and at the top
 		 * step it is a 14.6 dB jump. */
 		e->push += (e->push_target - e->push) * e->push_slew;
-		y *= e->push;
+		if (!e->line_out)
+			y *= e->push;
 
 		if (++e->hpos >= FIR_TAPS)
 			e->hpos = 0;
@@ -883,6 +919,7 @@ static void process(engine *e, float *buf, int frames)
 			 * no band ever exceeds the input.  The lower bands are
 			 * passed through the later crossovers' allpasses so the
 			 * sum stays flat. */
+			if (!e->line_out) {
 			float lo1 = split_lp(e, 0, y);
 			float hi1 = bq_run(&e->split_ap[0], y) - lo1;
 			float lo2 = split_lp(e, 1, hi1);
@@ -922,6 +959,7 @@ static void process(engine *e, float *buf, int frames)
 			  + mbl_run(&e->band[1], comp_run(&e->band[1], b2))
 			  + mbl_run(&e->band[2], comp_run(&e->band[2], b3))
 			  + mbl_run(&e->band[3], comp_run(&e->band[3], b4));
+			}
 
 			/* Final limiter: 4 ms of lookahead plus a held peak envelope.
 			 * The hold is longer than the slowest waveform cycle, so a steady
@@ -1096,6 +1134,44 @@ static double now_monotonic(void)
 	return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
 }
 
+/* Follow the codec's "Output Select" (see LINE OUT at the top). Polled, not
+ * subscribed: twice a second is plenty for a plug, and it keeps the audio
+ * loop free of another file descriptor. A card without the control leaves
+ * line_out at 0 - the speaker chain. */
+static snd_ctl_t *outsel_ctl;
+static snd_ctl_elem_value_t *outsel_val;
+static double outsel_checked_at;
+
+static void follow_output_select(engine *e)
+{
+	double now = now_monotonic();
+	if (now - outsel_checked_at < 0.5)
+		return;
+	outsel_checked_at = now;
+	if (!outsel_ctl) {
+		if (snd_ctl_open(&outsel_ctl, "hw:0", SND_CTL_NONBLOCK) < 0) {
+			outsel_ctl = NULL;
+			return;
+		}
+		if (snd_ctl_elem_value_malloc(&outsel_val) < 0) {
+			snd_ctl_close(outsel_ctl);
+			outsel_ctl = NULL;
+			return;
+		}
+		snd_ctl_elem_value_set_interface(outsel_val, SND_CTL_ELEM_IFACE_MIXER);
+		snd_ctl_elem_value_set_name(outsel_val, "Output Select");
+	}
+	if (snd_ctl_elem_read(outsel_ctl, outsel_val) < 0)
+		return;
+	int line = snd_ctl_elem_value_get_enumerated(outsel_val, 0) == 1;
+	if (line != e->line_out) {
+		e->line_out = line;
+		reset_dynamics(e);
+		logmsg("output: %s", line ? "headphone jack (line out: correction, push "
+		       "and bands off)" : "speaker (full chain)");
+	}
+}
+
 static int amp_state = -1;         /* 0 off, 1 warming, 2 ready */
 static double amp_opened_at;
 static double hold_retry_at;     /* next attempt to hold the codec open */
@@ -1141,7 +1217,8 @@ static void note_latency(const engine *e, snd_pcm_t *in, snd_pcm_t *out)
 		return;
 	lat_published_at = now;
 	double frames = lat_frames_sum / (double)lat_samples
-		+ fir_main_tap(e) + (e->mbcl_bypass ? 0 : 2 * LOOKAHEAD);
+		+ (e->line_out ? 0 : fir_main_tap(e))
+		+ (e->mbcl_bypass ? 0 : (e->line_out ? 1 : 2) * LOOKAHEAD);
 	lat_frames_sum = 0.0;
 	lat_samples = 0;
 	long us = lround(frames * 1e6 / RATE);
@@ -1198,6 +1275,7 @@ static void drain_control(engine *e, int fd)
 			load_curves(e);
 			load_user_eq(e);
 			load_mbcl(e);
+			load_level(e);
 			set_volume(e, e->volume);
 			logmsg("reloaded");
 		} else if (!strncmp(line, "bypass ", 7)) {
@@ -1301,6 +1379,7 @@ int main(int argc, char **argv)
 	load_curves(e);
 	load_user_eq(e);
 	load_mbcl(e);
+	load_level(e);
 	set_volume(e, e->volume);
 	e->push = e->push_target;
 	e->vol_post = e->vol_post_target;
@@ -1372,6 +1451,7 @@ int main(int argc, char **argv)
 		}
 		if (ctrl >= 0)
 			drain_control(e, ctrl);
+		follow_output_select(e);
 
 		/* A wake arrives before the audio does, so act on it here rather
 		 * than waiting for a non-silent period to force the open. */

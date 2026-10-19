@@ -1501,6 +1501,35 @@ def save_eq(s):
     return eq_store.save(s)
 
 
+# This speaker's level against the others in a group (biscuit-dsp LEVEL_CONF):
+# an attenuation applied with the volume taper, so the players can all sit on
+# the same volume number - which Music Assistant's group volume needs to move
+# them by the same amount - while each room still has its own loudness.
+LEVEL_CONF = "/etc/biscuit/level.conf"
+LEVEL_DB_MIN, LEVEL_DB_MAX = -30.0, 0.0
+
+
+def load_level_db():
+    try:
+        with open(LEVEL_CONF) as f:
+            for line in f:
+                k, _, v = line.partition("=")
+                if k.strip() == "level_db":
+                    return max(LEVEL_DB_MIN, min(LEVEL_DB_MAX, float(v)))
+    except (OSError, ValueError):
+        pass
+    return 0.0
+
+
+def save_level_db(db):
+    tmp = LEVEL_CONF + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("# Written by biscuit-va-leds from the Home Assistant Level slider.\n")
+        f.write("level_db = %.1f\n" % db)
+    os.replace(tmp, LEVEL_CONF)
+    eq_store.reload_dsp()
+
+
 def load_earcon_set():
     try:
         with open(EARCON_SET_FILE) as f:
@@ -3534,6 +3563,14 @@ class Ring:
                 _LOGGER.info("speaker EQ: %s (bass %+.1f mid %+.1f treble %+.1f)",
                              cur["eq_mode"], cur["eq_bass"], cur["eq_mid"],
                              cur["eq_treble"])
+            elif d.get("object_id") == "level_db":
+                try:
+                    want = max(LEVEL_DB_MIN, min(LEVEL_DB_MAX, float(d.get("value", 0))))
+                except (TypeError, ValueError):
+                    return
+                if abs(load_level_db() - want) >= 0.01:
+                    save_level_db(want)
+                    _LOGGER.info("speaker level -> %+.1f dB", want)
             elif d.get("object_id") == "earcon_set":
                 want = str(d.get("value", ""))
                 # Against what HA shows, not the stored name: after a sound was
@@ -3846,6 +3883,9 @@ def build_registrations():
                      EQ_DB_MIN, EQ_DB_MAX, eq["eq_" + name],
                      step=0.5, unit_of_measurement="dB", mode="slider")
              for name, _fc, _q in EQ_BANDS]
+    regs.append(_number("Level", "level_db", "mdi:volume-equal",
+                        LEVEL_DB_MIN, LEVEL_DB_MAX, load_level_db(),
+                        step=0.5, unit_of_measurement="dB", mode="slider"))
     regs.append(_select("Sounds", "earcon_set", "mdi:music-note",
                         EARCON_SETS + [EARCON_CUSTOM], current_earcon_set()))
     if direction_installed():
