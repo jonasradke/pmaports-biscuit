@@ -626,13 +626,23 @@ async def main() -> None:
     if (not args.processed_mic_profile) and (args.mic_noise_suppression > 0):
         preferences.mic_noise_suppression = args.mic_noise_suppression
 
-    # Load wake/stop models
-    wake_models, active_wake_words, fallback_used = load_wake_models(
-        available_wake_words,
-        [word for word in preferences.active_wake_words if word is not None],
-        args.wake_model,
-        preferred_type=preferred_wake_word_type,
-    )
+    # Load wake/stop models.
+    # Slots saved as all empty ([null, null]) mean the wake word was switched
+    # off in Home Assistant ("no_wake_word"), not that none was ever chosen:
+    # keep it off. load_wake_models falls back to --wake-model whenever it
+    # loads nothing, and that fallback is saved, so every restart turned the
+    # wake word back on. An empty list (fresh preferences) still gets the
+    # default.
+    if preferences.active_wake_words and all(w is None for w in preferences.active_wake_words):
+        _LOGGER.info("Wake word switched off in preferences: listening for none")
+        wake_models, active_wake_words, fallback_used = {}, set(), False
+    else:
+        wake_models, active_wake_words, fallback_used = load_wake_models(
+            available_wake_words,
+            [word for word in preferences.active_wake_words if word is not None],
+            args.wake_model,
+            preferred_type=preferred_wake_word_type,
+        )
 
     # TODO: allow openWakeWord for "stop"
     stop_model = load_stop_model(wake_word_dirs, args.stop_model)
