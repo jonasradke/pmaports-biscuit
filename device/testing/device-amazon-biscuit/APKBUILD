@@ -3,7 +3,7 @@ maintainer="jonasradke <me@jonasradke.com>"
 pkgname=device-amazon-biscuit
 pkgdesc="Amazon Echo Dot (2nd gen)"
 pkgver=6
-pkgrel=305
+pkgrel=306
 # The public release this build is: the name on the release page, the install
 # zip and the settings page. pkgrel is the build and keeps counting, because
 # apk orders upgrades by it and a release name like 1.0 would sort below the
@@ -12,7 +12,7 @@ pkgrel=305
 # given to another build (installer/zip/releases.json).
 # Releases of the jonasradke fork carry a "-jr" suffix, so they can never be
 # mistaken for, or collide with, an upstream release of the same number.
-_release="v1.2-jr"
+_release="v1.2.1-jr"
 url="https://github.com/jonasradke/pmaports-biscuit"
 # Core is our own code (MIT) plus two vendored pieces that keep their own
 # licences: TweetNaCl-js (public domain, Unlicense) for the setup and settings
@@ -1464,7 +1464,7 @@ ce517e42ca7c17ec6dccaa9e1ff7741aa0fe74ef8bfb40198d0c2a02566430f07a4c07d15baaf556
 cba0584c984700c8be668c7c8e42cb492195e3baad1779a1087cac9c2aa0d79880ac8bb2155dc8766bd5a263184badaa339fcd83760c08e5b250a1470935ce9d  biscuit-amp-wait
 9ae3e1c68d51124df1280436ee3325b509738e4251d79c29106d5db995e2af89427694eb6ee7dca0675e01c5e45a223d971bd4a66b6998bc823e4e41f43a0971  biscuit-silence.wav
 03ef53c970e9c9bd8f74dc767052c14dee9c974a7d61805837d12df9954472240a2d5d8ad7163f1e2fa7d146d8b76d457e7984912fe088553b6e92ac870f68e1  biscuit-miccal.py
-b14629d688c93cf3e56028f9ba2d8c8090ebe10f742a93baddfd011e45334ffc3a81864ea3607c317cd42047c8c0336a2ea92cce911bb0beef640573ba1bf8ef  biscuit-settings.py
+991fdf24b12c6e970ea63155a2a8720387182a3016ee333bcba7080d47c2769e2407cfdbc9151d4bfbcfdf8ffcec110389db9fda71dbe34db1249ce67a1644e0  biscuit-settings.py
 94f48cebc2fbf393182c323accc9e6f7c56bb14e24d6136b451ec131bf8d04aedbcd95cb103a12c2530b74bd610a69873c0acc60d410ce58fd5b975766b87fe3  biscuit-netcfg.py
 7aa697a7d0ece2dfc104ccc9dc6319cb2e95682f2e330146065c39df31dcddd9161877fdaf5959db71a4f10c550b7dc9e6cf51077faf783053fe7cc005b77330  biscuit-btcast.sh
 5169baea2ff90e73f348818acef3ca8c97bfd725f7f170288768adfb26c5da721a25c7b765ea6eca37e4ab42c3ef5151b8d55bb1ed4367fad4465d097f420153  biscuit-btproxy.py

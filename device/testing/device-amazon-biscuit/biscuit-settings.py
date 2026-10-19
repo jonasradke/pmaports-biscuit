@@ -52,6 +52,7 @@ import time
 import importlib.util
 import ipaddress
 import json
+import re
 import biscuit_ring_config as ring_config
 import biscuit_services as services
 import biscuit_system as system
@@ -1756,6 +1757,44 @@ def inventory_state(fresh=False):
     return dict(inv, job=services.JOB)
 
 
+# apk prints one line per package as it goes, "(3/12) Upgrading name (a -> b)",
+# even with --no-progress, and biscuit-pkgjob.sh sends it to *.out in its run
+# directory. The last such line - or the triggers that follow the packages - is
+# how far a running job has got.
+_APK_STEP = re.compile(r"^\((\d+)/(\d+)\)\s+(\w+)\s+(\S+)")
+
+
+def job_progress(since=0):
+    """How far a running package job has got, from apk's own output, or None."""
+    try:
+        outs = [os.path.join(netcfg.PKG_RUNDIR, n) for n in os.listdir(netcfg.PKG_RUNDIR)
+                if n.endswith(".out")]
+        path = max(outs, key=os.path.getmtime)
+        if os.path.getmtime(path) < since - 5:
+            return None
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 8192))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except (OSError, ValueError):
+        return None
+    step = None
+    for line in reversed(lines):
+        line = line.strip()
+        if line.startswith("Executing ") and line.endswith(".trigger"):
+            return {"phase": "triggers", "done": None, "total": None,
+                    "text": "Finishing: rebuilding the start-up files"}
+        m = _APK_STEP.match(line)
+        if m:
+            step = m
+            break
+    if not step:
+        return {"phase": "fetch", "done": None, "total": None, "text": "Downloading the package list"}
+    done, total = int(step.group(1)), int(step.group(2))
+    return {"phase": "packages", "done": done, "total": total,
+            "text": "%s %s" % (step.group(3), step.group(4))}
+
+
 def updates_state():
     """The Updates page: what is installed, the last check, and any job.
 
@@ -1765,8 +1804,12 @@ def updates_state():
     u = system.updates()
     job = netcfg.package_job()
     u["job"] = job if job and job.get("action") in system.JOB_ACTIONS else None
+    if u["job"] and u["job"]["state"] == "running":
+        u["job"]["progress"] = job_progress()
     run = running_job()
     u["app_job"] = _with_labels(run) if run and run.get("action") in ("add", "del") else None
+    if u["app_job"]:
+        u["app_job"]["progress"] = job_progress()
     u["now"] = int(time.time())
     return u
 
@@ -3300,7 +3343,10 @@ button:disabled { opacity:.6; cursor:default; }
         padding-top:.7rem; margin-top:.1rem; text-align:center; }
 
 </style>
-<form id="f">
+<!-- method, action, name and type are what password managers (Bitwarden on
+     Android especially) recognise a sign-in form by; the script below still
+     sends it, sealed, and the browser never posts it as a plain form. -->
+<form id="f" method="post" action="/login">
   <div class="mark">
     <svg width="40" height="40" viewBox="0 0 16 16" fill="none" stroke="currentColor"
          stroke-width="1.3" aria-hidden="true">
@@ -3309,10 +3355,12 @@ button:disabled { opacity:.6; cursor:default; }
   </div>
   <h1>Echo settings</h1>
   <p class="sub">Sign in with the username and password you set up on this device.</p>
-  <label>Username <input id="u" autocomplete="username" autocapitalize="none"
-                         autocorrect="off" spellcheck="false" autofocus required></label>
-  <label>Password <input id="p" type="password" autocomplete="current-password" required></label>
-  <button id="go">Sign in</button>
+  <label>Username <input id="u" name="username" type="text" autocomplete="username"
+                         autocapitalize="none" autocorrect="off" spellcheck="false"
+                         autofocus required></label>
+  <label>Password <input id="p" name="password" type="password"
+                         autocomplete="current-password" required></label>
+  <button id="go" type="submit">Sign in</button>
   <div id="msg" role="alert"></div>
   <div class="warn" id="note">Your password is encrypted in this browser before it
     is sent. The rest of this page is plain HTTP on your local network.</div>
@@ -7679,6 +7727,16 @@ PAGES["about"] = async function () {
  * packages - postmarketOS's own - update only when asked, with Python held at
  * the minor version the apps' environments were built for.
  * ===================================================================== */
+// A running package job's progress (see job_progress on the server): a bar
+// and "Step 3 of 12: Upgrading name" while apk works through the packages.
+function progressHtml(p) {
+  if (!p) return "";
+  if (p.phase !== "packages" || !p.total) return esc(p.text);
+  const pct = Math.round(100 * p.done / p.total);
+  return '<progress max="100" value="' + pct + '" style="width:100%;height:.5rem;accent-color:var(--accent)"></progress>' +
+         "<br>Step " + p.done + " of " + p.total + ": " + esc(p.text);
+}
+
 PAGES["updates"] = async function () {
   const u = await api("/api/updates");
   const job = u.job;
@@ -7690,7 +7748,8 @@ PAGES["updates"] = async function () {
   const boot = u.boot;
   const blocks = [];
   pollPage(() => api("/api/updates"),
-    (d) => JSON.stringify([d.job && d.job.state, d.job && d.job.message, !!d.app_job, d.checked_at, d.target,
+    (d) => JSON.stringify([d.job && d.job.state, d.job && d.job.message, d.job && d.job.progress,
+                           d.app_job && d.app_job.progress, !!d.app_job, d.checked_at, d.target,
                            d.kernel_available, d.reboot_required, (d.system || []).length, d.auto_check,
                            d.boot && [d.boot.differs, d.boot.checked_at, d.boot.rolled_back,
                                       d.boot.rollback && d.boot.rollback.available]]),
@@ -7725,11 +7784,12 @@ PAGES["updates"] = async function () {
   const top = [];
   if (jobBusy) {
     top.push(row({ icon: "refresh", title: job.message || "Working…", badge: "Working", badgeKind: "accent",
-                   sub: "This can take a few minutes. You can leave this page." }));
+                   sub: progressHtml(job.progress) || "This can take a few minutes. You can leave this page." }));
   } else if (appJob) {
     top.push(row({ icon: "refresh", badge: "Working", badgeKind: "accent", go: "#/apps",
       title: (appJob.action === "add" ? "Installing " : "Removing ") + andList(appJob.labels),
-      sub: "Updates can be checked or installed once this has finished." }));
+      sub: (progressHtml(appJob.progress) ? progressHtml(appJob.progress) + "<br>" : "") +
+           "Updates can be checked or installed once this has finished." }));
   }
   if (!jobBusy && failed) {
     top.push(row({ icon: "info", title: "The last attempt failed", badge: "Failed", badgeKind: "warn", sub: esc(job.message || "") }));
