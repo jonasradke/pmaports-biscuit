@@ -95,6 +95,11 @@ FEED_MATCH=jonasradke.github.io/pmaports-biscuit/
 # Seconds any apk call that changes the database waits for another apk's lock.
 APK_WAIT=600
 
+# apk's own progress, "<done>/<total> download|install" per line, for the
+# settings page's progress bar. Its text output is no use for that: written to
+# a file it is buffered and arrives in one piece when apk exits.
+PROGRESS=$RUNDIR/progress
+
 ACTION=${1:-}
 shift 2>/dev/null || true
 PACKAGES="$*"
@@ -274,7 +279,7 @@ BUSY_MSG="Another package operation was using this Echo's package database, so n
 # with no internet looking at their time settings.
 refresh_index() {
 	INDEX_WHY="" INDEX_REASON="" INDEX_NET=""
-	apk --wait "$APK_WAIT" update > "$RUNDIR/update.out" 2>&1
+	apk --wait "$APK_WAIT" --progress-fd 3 update > "$RUNDIR/update.out" 2>&1 3>"$PROGRESS"
 	_rc=$?
 	cat "$RUNDIR/update.out" >> "$LOG"
 	[ $_rc -eq 0 ] && return 0
@@ -476,7 +481,7 @@ install_set() {   # PACKAGES
 		return 3
 	fi
 	# shellcheck disable=SC2086
-	apk --wait "$APK_WAIT" add --no-progress $1 > "$RUNDIR/add.out" 2>&1
+	apk --wait "$APK_WAIT" --progress-fd 3 add --no-progress $1 > "$RUNDIR/add.out" 2>&1 3>"$PROGRESS"
 	_arc=$?
 	cat "$RUNDIR/add.out" >> "$LOG"
 	[ $_arc -eq 0 ] || return 1
@@ -534,7 +539,7 @@ record_check() {   # OK NEWER [WHY]
 update_ours() {   # NEWER
 	_want=$(printf '%s\n' "$1" | awk 'NF == 3 { print $1 "=" $3 }')
 	# shellcheck disable=SC2086
-	apk --wait "$APK_WAIT" add --no-progress $_want > "$RUNDIR/ours.out" 2>&1
+	apk --wait "$APK_WAIT" --progress-fd 3 add --no-progress $_want > "$RUNDIR/ours.out" 2>&1 3>"$PROGRESS"
 	_rc=$?
 	cat "$RUNDIR/ours.out" >> "$LOG"
 	if [ $_rc -ne 0 ]; then
@@ -685,9 +690,9 @@ update_system() {
 	hold_boot_deploy
 	if [ -n "$PACKAGES" ]; then
 		# shellcheck disable=SC2086
-		apk --wait "$APK_WAIT" add --no-progress -u $PACKAGES > "$RUNDIR/sysupdate.out" 2>&1
+		apk --wait "$APK_WAIT" --progress-fd 3 add --no-progress -u $PACKAGES > "$RUNDIR/sysupdate.out" 2>&1 3>"$PROGRESS"
 	else
-		apk --wait "$APK_WAIT" upgrade --no-progress > "$RUNDIR/sysupdate.out" 2>&1
+		apk --wait "$APK_WAIT" --progress-fd 3 upgrade --no-progress > "$RUNDIR/sysupdate.out" 2>&1 3>"$PROGRESS"
 	fi
 	_rc=$?
 	cat "$RUNDIR/sysupdate.out" >> "$LOG"

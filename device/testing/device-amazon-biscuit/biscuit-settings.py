@@ -68,6 +68,7 @@ STOCK_STAGING_MAX = 16 << 20
 import os
 import socket
 import socketserver
+import ssl
 import subprocess
 import sys
 import urllib.parse
@@ -1764,8 +1765,43 @@ def inventory_state(fresh=False):
 _APK_STEP = re.compile(r"^\((\d+)/(\d+)\)\s+(\w+)\s+(\S+)")
 
 
+_APK_PROGRESS = re.compile(r"^(\d+)/(\d+)\s+(\w+)")
+
+
+def _apk_progress():
+    """apk's own progress (biscuit-pkgjob.sh PROGRESS), as (percent, phase) of
+    the apk call running now, or None."""
+    try:
+        path = os.path.join(netcfg.PKG_RUNDIR, "progress")
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 512))
+            lines = f.read().decode("ascii", "replace").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        m = _APK_PROGRESS.match(line.strip())
+        if m and int(m.group(2)) > 0:
+            return min(100, 100 * int(m.group(1)) // int(m.group(2))), m.group(3)
+    return None
+
+
 def job_progress(since=0):
     """How far a running package job has got, from apk's own output, or None."""
+    p = _job_progress(since)
+    ap = _apk_progress()
+    if p is not None and ap is not None and p["phase"] != "triggers":
+        pct, phase = ap
+        word = {"download": "Downloading", "install": "Installing"}.get(phase, phase.capitalize())
+        p["percent"] = pct
+        if p["phase"] != "packages" or not p.get("total") or p.get("unit") == "source":
+            p["text"] = word
+            p["phase"] = "packages"
+            p["done"] = p["total"] = None
+    return p
+
+
+def _job_progress(since=0):
     try:
         outs = [os.path.join(netcfg.PKG_RUNDIR, n) for n in os.listdir(netcfg.PKG_RUNDIR)
                 if n.endswith(".out")]
@@ -1778,6 +1814,25 @@ def job_progress(since=0):
             lines = f.read().decode("utf-8", "replace").splitlines()
     except (OSError, ValueError):
         return None
+    if os.path.basename(path) == "update.out":
+        # The package lists: apk update prints a line ending in "[<url>]" as
+        # each source is loaded (apk-tools 2 also "fetch <url>" before it), and
+        # "OK: ..." once it has them all.
+        if any(line.startswith("OK:") for line in lines):
+            return {"phase": "check", "done": None, "total": None,
+                    "text": "Comparing the installed versions"}
+        fetched = [m.group(1) for m in (re.search(r"\[(https?://[^\]]+)\]$", line.strip())
+                                        for line in lines) if m]
+        try:
+            with open("/etc/apk/repositories") as f:
+                total = sum(1 for r in f if r.strip() and not r.lstrip().startswith("#"))
+        except OSError:
+            total = 0
+        if not fetched or not total:
+            return {"phase": "check", "done": None, "total": None, "text": "Checking for updates"}
+        host = urllib.parse.urlparse(fetched[-1]).hostname or fetched[-1]
+        return {"phase": "packages", "done": min(len(fetched), total), "total": total,
+                "text": "Loaded %s" % host, "unit": "source"}
     step = None
     for line in reversed(lines):
         line = line.strip()
@@ -2300,8 +2355,36 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("bad request size")
         return json.loads(self.rfile.read(n).decode())
 
+    def _is_tls(self):
+        return isinstance(self.connection, ssl.SSLSocket)
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
+        if path == "/ca.crt":
+            # This Echo's certificate authority, to install on a phone or
+            # computer once (see HTTPS above). Open to all: it is public, and
+            # it is needed before the secure page can be trusted.
+            try:
+                with open(TLS_CA_CERT, "rb") as f:
+                    body = f.read()
+            except OSError:
+                self._send(404, "not found", "text/plain")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-x509-ca-cert")
+            self.send_header("Content-Disposition",
+                             'attachment; filename="%s-echo-ca.crt"' % (socket.gethostname() or "echo"))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if HTTPS_ON and not self._is_tls() and "text/html" in (self.headers.get("Accept") or ""):
+            # A browser opening a page over plain HTTP goes to the secure one.
+            # API calls are not redirected, so a script that speaks HTTP keeps
+            # working.
+            host = (self.headers.get("Host") or socket.gethostname() + ".local").split(":")[0]
+            self._redirect("https://%s%s" % (host, self.path))
+            return
         if path == "/login":
             self._static(static_page("login"))
             return
@@ -3240,6 +3323,108 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, "not found", "text/plain")
 
 
+
+# ---------------------------------------------------------------------------
+# HTTPS
+# ---------------------------------------------------------------------------
+#
+# The page is also served over HTTPS on 443, with a certificate from a small
+# certificate authority of this Echo's own. Plain HTTP was why Chromium
+# browsers (Brave, Chrome) on a phone would not hand the sign-in form to a
+# password manager, and a self-signed certificate alone does not help: they do
+# not autofill on a page with a certificate warning either. So the owner
+# installs this Echo's CA on their phone once (/ca.crt, offered on the sign-in
+# page and open without signing in), and from then on the page is simply
+# secure. The CA is made once and kept; the server certificate is renewed when
+# the Echo's name or addresses change, or a month before it expires. 825 days
+# is the longest validity iOS accepts. Without openssl, or if anything here
+# fails, the page stays on HTTP alone, as before.
+HTTPS_PORT = 443
+TLS_DIR = "/opt/persist/biscuit/tls"
+TLS_CA_KEY = os.path.join(TLS_DIR, "ca.key")
+TLS_CA_CERT = os.path.join(TLS_DIR, "ca.crt")
+TLS_KEY = os.path.join(TLS_DIR, "server.key")
+TLS_CERT = os.path.join(TLS_DIR, "server.crt")
+TLS_NAMES = os.path.join(TLS_DIR, "server.names")
+
+
+def _tls_names():
+    host = socket.gethostname() or "biscuit"
+    dns = [host + ".local", host]
+    ips = []
+    try:
+        out = subprocess.run(["ip", "-o", "-4", "addr", "show"], capture_output=True,
+                             text=True, timeout=5).stdout
+        for line in out.splitlines():
+            m = re.search(r"\sinet\s(\d+\.\d+\.\d+\.\d+)/", line)
+            if m and not m.group(1).startswith("127."):
+                ips.append(m.group(1))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return dns, sorted(set(ips))
+
+
+def _openssl(*args):
+    subprocess.run(["openssl"] + list(args), check=True, capture_output=True, timeout=60)
+
+
+def ensure_tls():
+    """An SSL context for the settings page, or None to stay on HTTP."""
+    if not shutil.which("openssl"):
+        _LOGGER.warning("HTTPS off: openssl is not installed")
+        return None
+    try:
+        os.makedirs(TLS_DIR, mode=0o700, exist_ok=True)
+        dns, ips = _tls_names()
+        if not (os.path.exists(TLS_CA_KEY) and os.path.exists(TLS_CA_CERT)):
+            _openssl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                     "-nodes", "-keyout", TLS_CA_KEY, "-out", TLS_CA_CERT, "-days", "3650",
+                     "-subj", "/CN=%s Echo (local)" % dns[1],
+                     "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+                     "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+            os.chmod(TLS_CA_KEY, 0o600)
+            _LOGGER.info("HTTPS: made this Echo's certificate authority")
+        want = " ".join(dns + ips)
+        try:
+            have = open(TLS_NAMES).read().strip()
+        except OSError:
+            have = ""
+        fresh = (have == want and os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY)
+                 and subprocess.run(["openssl", "x509", "-checkend", str(30 * 86400),
+                                     "-noout", "-in", TLS_CERT],
+                                    capture_output=True, timeout=30).returncode == 0)
+        if not fresh:
+            san = ",".join(["DNS:" + d for d in dns] + ["IP:" + i for i in ips])
+            ext = os.path.join(TLS_DIR, "server.ext")
+            with open(ext, "w") as f:
+                f.write("subjectAltName=%s\nbasicConstraints=critical,CA:FALSE\n"
+                        "keyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n" % san)
+            csr = os.path.join(TLS_DIR, "server.csr")
+            _openssl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                     "-nodes", "-keyout", TLS_KEY, "-out", csr, "-subj", "/CN=" + dns[0])
+            _openssl("x509", "-req", "-in", csr, "-CA", TLS_CA_CERT, "-CAkey", TLS_CA_KEY,
+                     "-CAcreateserial", "-out", TLS_CERT, "-days", "825", "-sha256",
+                     "-extfile", ext)
+            os.chmod(TLS_KEY, 0o600)
+            with open(TLS_NAMES, "w") as f:
+                f.write(want + "\n")
+            _LOGGER.info("HTTPS: certificate for %s", want)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        with open(TLS_CERT) as a, open(TLS_CA_CERT) as b:
+            chain = os.path.join(TLS_DIR, "chain.crt")
+            with open(chain, "w") as c:
+                c.write(a.read() + b.read())
+        ctx.load_cert_chain(chain, TLS_KEY)
+        return ctx
+    except Exception as err:                      # noqa: BLE001
+        _LOGGER.warning("HTTPS off: %s", err)
+        return None
+
+
+HTTPS_ON = False   # set by main() once the HTTPS server is listening
+
+
 class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     # What the manual ring control is currently holding, if anything. On the
@@ -3285,9 +3470,24 @@ class Server(socketserver.ThreadingTCPServer):
         in the noise.
         """
         err = sys.exc_info()[1]
-        if isinstance(err, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):
+        if isinstance(err, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError,
+                            ssl.SSLError, socket.timeout)):
+            # Over HTTPS also a browser that has not trusted this Echo's CA
+            # yet: it closes the handshake, which is not this page's fault.
             return
         socketserver.ThreadingTCPServer.handle_error(self, request, client_address)
+
+
+class TLSServer(Server):
+    """The HTTPS twin of Server: the same handler and the same refusals. The
+    handshake runs in the request's own thread, not in accept()."""
+    ssl_context = None
+
+    def get_request(self):
+        sock, addr = self.socket.accept()
+        sock.settimeout(30)
+        return self.ssl_context.wrap_socket(sock, server_side=True,
+                                            do_handshake_on_connect=False), addr
 
 
 # Self-contained for the same reason the rest of the page is: the device may be
@@ -3382,7 +3582,13 @@ async function seal(obj) {
   return { sealed: b64(eph.publicKey) + "." + b64(nonce) + "." +
                    b64(nacl.box(msg, nonce, u8(k.key), eph.secretKey)) };
 }
-if (!window.nacl) document.getElementById("note").textContent =
+if (location.protocol === "https:") document.getElementById("note").innerHTML =
+  "This page is encrypted. If your browser warned about it, install this " +
+  "Echo's <a href=\"http://" + location.hostname + "/ca.crt\">certificate</a> once. " +
+  "Android: Settings, Security, Encryption &amp; credentials, Install a certificate, " +
+  "CA certificate. iPhone: open it, install the profile, then turn it on under " +
+  "General, About, Certificate Trust Settings.";
+else if (!window.nacl) document.getElementById("note").textContent =
   "This page is plain HTTP on your local network, and this browser could not " +
   "encrypt your password, so it is sent as typed.";
 document.getElementById("f").onsubmit = async (e) => {
@@ -7731,10 +7937,15 @@ PAGES["about"] = async function () {
 // and "Step 3 of 12: Upgrading name" while apk works through the packages.
 function progressHtml(p) {
   if (!p) return "";
+  const bar = (pct) => '<progress max="100" value="' + pct +
+    '" style="width:100%;height:.5rem;accent-color:var(--accent)"></progress><br>';
+  // apk's own percentage when it reports one; otherwise the package count.
+  if (p.percent != null)
+    return bar(p.percent) + esc(p.text) + (p.total ? " (step " + p.done + " of " + p.total + ")" : "") +
+           ": " + p.percent + "%";
   if (p.phase !== "packages" || !p.total) return esc(p.text);
-  const pct = Math.round(100 * p.done / p.total);
-  return '<progress max="100" value="' + pct + '" style="width:100%;height:.5rem;accent-color:var(--accent)"></progress>' +
-         "<br>Step " + p.done + " of " + p.total + ": " + esc(p.text);
+  return bar(Math.round(100 * p.done / p.total)) +
+         (p.unit === "source" ? "Source " : "Step ") + p.done + " of " + p.total + ": " + esc(p.text);
 }
 
 PAGES["updates"] = async function () {
@@ -8067,6 +8278,18 @@ def main():
         PORT = system.DEFAULT_SETTINGS_PORT
         srv = Server(("0.0.0.0", PORT), Handler)
     sys.stderr.write("[settings] listening on :%d, editing %s\n" % (PORT, LED_MAP_FILE))
+    global HTTPS_ON
+    ctx = ensure_tls()
+    if ctx is not None and PORT != HTTPS_PORT:
+        try:
+            tls = TLSServer(("0.0.0.0", HTTPS_PORT), Handler)
+            tls.ssl_context = ctx
+            threading.Thread(target=tls.serve_forever, daemon=True).start()
+            HTTPS_ON = True
+            sys.stderr.write("[settings] HTTPS on :%d\n" % HTTPS_PORT)
+        except OSError as err:
+            sys.stderr.write("[settings] HTTPS off, cannot listen on :%d (%s)\n"
+                             % (HTTPS_PORT, err))
     threading.Thread(target=auto_check_loop, daemon=True).start()
     threading.Thread(target=apps_retry_loop, daemon=True).start()
     try:
