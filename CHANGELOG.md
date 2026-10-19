@@ -12,6 +12,26 @@ Releases of the jonasradke fork end in `-jr` and continue the build numbers
 from r299; they are built by GitHub Actions and served from the fork's own
 feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
 
+## v1.2.1-jr (build r306)
+
+| | Version |
+|---|---|
+| `device-amazon-biscuit` and subpackages | 6-r306 |
+| `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
+| `amazon-biscuit-backup.zip`, `-restore.zip`, `-stock-restore.zip` | v3 each (unchanged) |
+
+- **The settings page is served over HTTPS**, with a certificate from a
+  certificate authority of this Echo's own. Install it once on your phone or
+  computer from `http://<name>.local/ca.crt` (the sign-in page says how on
+  Android and iPhone); after that the page is fully secure, and Chromium
+  browsers such as Brave and Chrome hand the sign-in form to password
+  managers. Plain HTTP pages forward to HTTPS. New dependency: openssl.
+- **The sign-in form is one password managers recognise** (Bitwarden on a
+  phone did not offer to fill it).
+- **Updates show their progress:** a bar with the percentage, the package
+  being installed and the step, while checking, downloading, installing and
+  finishing - for updates and for apps alike.
+
 ## v1.2-jr (build r305)
 
 | | Version |
