@@ -222,7 +222,10 @@ load_driver || {
 # On stock this never mattered: Android's framework chooses the BSSID itself and
 # hands it to the supplicant fixed. Measured on one unit with the bias below:
 # joins 5 GHz at -75 dBm on every boot, 43/55 Mbit/s down/up, 0/1200 pings lost;
-# below -82 dBm 2.4 GHz still wins. It must be set before wpa_supplicant's first
+# below -82 dBm 2.4 GHz still won. With the antenna connected (connect_antenna
+# above) the floor is -86 dBm: on the owner's spot 5 GHz arrives at -76..-82
+# against 2.4 GHz at -60, and they prefer 5 GHz there, which Bluetooth audio
+# does not share. Below -86 2.4 GHz still wins. It must be set before wpa_supplicant's first
 # connect: moving bands later needs a disconnect, and after one the driver
 # leaves cfg80211 believing it is still connected, which then refuses every
 # connect with EALREADY until a reboot.
@@ -239,8 +242,8 @@ set_radio_defaults() {
 	fi
 	# rangeHi,rangeMed,rangeLo (dBm), prefHi,prefMed,prefLo (dB)
 	if [ -w /proc/net/wlan/roam_param ]; then
-		if echo "roam_5g_bias -65,-75,-82,30,30,30" > /proc/net/wlan/roam_param 2>/dev/null; then
-			log "5 GHz preference set (+30 dB above -82 dBm)"
+		if echo "roam_5g_bias -65,-75,-86,30,30,30" > /proc/net/wlan/roam_param 2>/dev/null; then
+			log "5 GHz preference set (+30 dB above -86 dBm)"
 		fi
 	fi
 }
