@@ -387,6 +387,54 @@ build() {
 		--enable CONFIG_NL80211_TESTMODE \
 		--enable CONFIG_CFG80211_WEXT \
 		--set-val CONFIG_MT6625L_WLAN m
+	# Build only what this board runs. arm64 defconfig is written for every
+	# arm64 machine; with the other SoC families off above it still compiled
+	# about 616 modules - of which the Echo loads about a dozen - plus DWARF
+	# debug info for every object, which nothing on the device reads and which
+	# slows every compile and link. A kernel build took most of an hour.
+	#
+	# Off: debug info, and buses and subsystems this board does not have
+	# (PCI, virtualisation, USB host - the MUSB port is a gadget only).
+	# Then every remaining module is dropped except the ones something on the
+	# Echo loads: the Wi-Fi driver, snd-aloop (biscuit-dsp), the pstore RAM
+	# backend (modules-load.d), IPv6, Bluetooth HID, the kernel crypto (AF_ALG
+	# and its algorithms), the display/PWM blocks the device tree binds,
+	# FUSE and overlayfs, and the mass-storage gadget. olddefconfig then
+	# brings back anything a kept option selects.
+	"$builddir/scripts/config" --file "$builddir/$_outdir/.config" \
+		--disable CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT \
+		--disable CONFIG_DEBUG_INFO_DWARF4 \
+		--disable CONFIG_DEBUG_INFO_DWARF5 \
+		--enable CONFIG_DEBUG_INFO_NONE \
+		--disable CONFIG_PCI \
+		--disable CONFIG_VIRTUALIZATION \
+		--disable CONFIG_KVM \
+		--disable CONFIG_VIRTIO_MENU \
+		--disable CONFIG_NET_9P \
+		--disable CONFIG_NFS_FS \
+		--disable CONFIG_NUMA \
+		--disable CONFIG_USB_XHCI_HCD \
+		--disable CONFIG_USB_EHCI_HCD \
+		--disable CONFIG_USB_OHCI_HCD \
+		--disable CONFIG_USB_STORAGE \
+		--disable CONFIG_INPUT_TOUCHSCREEN
+	_keep='SND_ALOOP|MT6625L_WLAN|PSTORE_RAM|REED_SOLOMON.*|IPV6|BT_HIDP'
+	_keep="$_keep|CRYPTO_[A-Z0-9_]*|CRC_[A-Z0-9_]*"
+	_keep="$_keep|MTK_MMSYS|MTK_CMDQ|MTK_CMDQ_MBOX|MTK_UART_APDMA"
+	_keep="$_keep|PWM_MTK_DISP|PWM_MEDIATEK|BACKLIGHT_CLASS_DEVICE|BACKLIGHT_PWM"
+	_keep="$_keep|FUSE_FS|OVERLAY_FS|USB_MASS_STORAGE"
+	# Other SoCs' crypto engines (CRYPTO_DEV_*) go too.
+	sed -i -E \
+		-e '/^CONFIG_CRYPTO_DEV_[A-Z0-9_]*=m$/{s/^CONFIG_([A-Z0-9_]*)=m$/# CONFIG_\1 is not set/;b}' \
+		-e "/^CONFIG_($_keep)=m\$/b" \
+		-e 's/^CONFIG_([A-Za-z0-9_]*)=m$/# CONFIG_\1 is not set/' \
+		"$builddir/$_outdir/.config"
+	make O="$_outdir" ARCH="$_carch" CC="${CC:-gcc}" olddefconfig
+	echo "modules left: $(grep -c '=m$' "$builddir/$_outdir/.config")"
+	grep '=m$' "$builddir/$_outdir/.config" | tr '\n' ' '; echo
+	! grep -q '^CONFIG_DEBUG_INFO=y' "$builddir/$_outdir/.config"
+	grep -q '^CONFIG_MT6625L_WLAN=m' "$builddir/$_outdir/.config"
+	grep -q '^CONFIG_SND_ALOOP=m' "$builddir/$_outdir/.config"
 	make O="$_outdir" ARCH="$_carch" CC="${CC:-gcc}" KCFLAGS="-Wno-error=incompatible-pointer-types" \
 		KBUILD_BUILD_VERSION="$((pkgrel + 1 ))-postmarketOS"
 	make O="$_outdir" ARCH="$_carch" CC="${CC:-gcc}" KCFLAGS="-Wno-error=incompatible-pointer-types" \

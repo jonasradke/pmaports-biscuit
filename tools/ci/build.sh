@@ -76,6 +76,7 @@ boot_size = 128
 timezone = Etc/UTC
 user = user
 jobs = $(nproc)
+ccache_size = 3G
 EOF
 # init with every answer defaulted: it takes the values above and creates the
 # work directory. Its prompts change between versions; the config is the
@@ -154,6 +155,10 @@ fi
 build bluez-alsa --arch aarch64
 build boot-deploy --arch aarch64
 build linux-amazon-biscuit
+# The compiler cache the kernel build used; the workflow keeps it between
+# runs ($WORK/cache_ccache_x86_64), so a small kernel change rebuilds only
+# what it touches.
+pmb stats || true
 build device-amazon-biscuit --arch aarch64
 
 if [ -n "${KERNEL_CACHE:-}" ] && [ ! -f "$KERNEL_CACHE/linux-amazon-biscuit-$K_V.apk" ]; then

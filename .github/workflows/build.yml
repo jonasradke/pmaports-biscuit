@@ -69,6 +69,21 @@ jobs:
           path: kernel-cache
           key: kernel-${{ hashFiles('device/testing/linux-amazon-biscuit/**') }}
 
+      - name: Restore the compiler cache
+        # pmbootstrap's ccache for the kernel, which is cross-compiled in the
+        # x86_64 chroot. Rolling: each kernel build saves a new entry and the
+        # next run starts from the newest.
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.local/var/pmbootstrap/cache_ccache_x86_64
+          key: ccache-${{ github.run_id }}
+          restore-keys: ccache-
+
+      - name: Give the compiler cache back to the chroots' pmos user
+        run: |
+          d=~/.local/var/pmbootstrap/cache_ccache_x86_64
+          if [ -d "$d" ]; then sudo chown -R 12345:12345 "$d"; du -sh "$d"; fi
+
       - name: Build
         env:
           MODE: ${{ (github.ref_type == 'tag' || inputs.full) && 'full' || 'packages' }}
@@ -83,6 +98,20 @@ jobs:
         with:
           path: kernel-cache
           key: kernel-${{ hashFiles('device/testing/linux-amazon-biscuit/**') }}
+
+      - name: Make the compiler cache readable
+        if: always() && steps.kernel.outputs.cache-hit != 'true'
+        run: |
+          d=~/.local/var/pmbootstrap/cache_ccache_x86_64
+          if [ -d "$d" ]; then sudo chmod -R a+rX "$d"; du -sh "$d"; fi
+
+      - name: Keep the compiler cache
+        # Only when the kernel was compiled here; otherwise nothing changed.
+        if: always() && steps.kernel.outputs.cache-hit != 'true' && hashFiles('kernel-cache/*.apk') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.local/var/pmbootstrap/cache_ccache_x86_64
+          key: ccache-${{ github.run_id }}
 
       - name: Upload packages
         uses: actions/upload-artifact@v4
