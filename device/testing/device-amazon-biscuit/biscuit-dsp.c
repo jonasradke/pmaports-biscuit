@@ -736,12 +736,14 @@ static void load_mbcl(engine *e)
  *      another, residual 0.00000).  Applying it always makes our EQ stage
  *      equal stock's at full volume.
  *
- *   the taper is the volume control itself.  Loudness roughly halves per
- *      10 dB, so 10*log2(fraction) makes the slider proportional to perceived
- *      loudness: half reads half, a quarter reads a quarter.  Stock is far
- *      steeper than this (its own half is about a fifth) and the old codec
- *      taper here was steeper still, which is why most of the useful range
- *      was bunched into the top of the slider.
+ *   the taper is the volume control itself: VOL_DB_PER_POINT for every point
+ *      below 100, so 100 is full and 1 is -49.5 dB.  Equal dB per point
+ *      makes every step of a slider or a remote the same audible size.  The
+ *      earlier 10*log2(fraction) taper (10 dB per halving) made the number
+ *      proportional to loudness, but a fixed step of a few points was then
+ *      about 1.5 dB near the top and 6-9 dB at quiet listening levels,
+ *      which is where Spotify Connect's steps were far too coarse.  The
+ *      Sonos bridge and biscuit-usbaudio use the same law.
  *
  * This is applied BEFORE MBCL, which is the point.  Attenuating after the DSP
  * - as the codec register used to - left the compressor seeing a full-scale
@@ -749,13 +751,15 @@ static void load_mbcl(engine *e)
  * loud listening.  Stock attenuates pre-MBCL and leaves its codec at unity;
  * its HP driver gain register reads 0x00 at every volume.
  */
-#define VOL_DB_PER_HALVING  10.0f
+#define VOL_DB_PER_POINT  0.5f
 
 static float volume_taper_db(int vol)
 {
 	if (vol <= 0)
 		return -120.0f;
-	return VOL_DB_PER_HALVING * (logf((float)vol / 100.0f) / logf(2.0f));
+	if (vol >= 100)
+		return 0.0f;
+	return -VOL_DB_PER_POINT * (float)(100 - vol);
 }
 
 static float push_for_volume(int vol, int after_lim)
@@ -1016,7 +1020,7 @@ static void process(engine *e, float *buf, int frames)
 			 * 11.5 dB into limiting, so dropping the pre-MBCL gain by
 			 * 10 dB moved an earcon by 0.84 dB and the top half of the
 			 * slider did nothing. Here it is a plain scalar, so every
-			 * halving is exactly VOL_DB_PER_HALVING on any material.
+			 * point is exactly VOL_DB_PER_POINT on any material.
 			 * The cost is that the dynamics no longer ease off at low
 			 * volume - measured about 2 dB of crest factor on mid-level
 			 * content. Set volume_after_limiter = 0 to get the old

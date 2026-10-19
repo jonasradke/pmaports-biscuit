@@ -98,12 +98,12 @@ watcher=
 #
 #   the control is dB       0..100 spans the -100..0 dB the gadget advertises
 #   the host is amplitude   Windows sends 20*log10(slider), 6 dB per halving
-#   the device is loudness  biscuit-dsp's taper is 10*log2(vol/100),
-#                           VOL_DB_PER_HALVING = 10, i.e. 10 dB per halving
+#   the device is even dB   biscuit-dsp's taper is -0.5 dB per point below
+#                           100 (VOL_DB_PER_POINT), so 1 is -49.5 dB
 #
 # So match the ATTENUATION the host asked for, not the number it is expressed
-# in: 10*log2(v/100) = control-100, giving v = 100 * 2^((c-100)/10). A 2%
-# slider asks for -34 dB; pass-through delivered -3.9 dB.
+# in: -0.5*(100-v) = control-100, giving v = 2*c - 100. A 2% slider asks for
+# -34 dB, device volume 32; pass-through put it at 2, -49 dB.
 #
 # A muted host becomes volume 0, which lights the muted step, rather than the
 # device mute command - the host is setting a level here, not taking over the
@@ -144,9 +144,8 @@ apply_host_volume() {
     [ "$vol" -le 100 ] 2>/dev/null || return 0
     # Our own push arriving back through `amixer events`. The round trip is NOT
     # identity and cannot be left to cancel itself out: the control is 1 dB per
-    # step over 0..100 while the device is 0..100 on a 10 dB-per-halving taper,
-    # so near the top several device levels share one control step and 99 would
-    # be dragged to 100. Compared before the mute collapse below, because that
+    # step over 0..100 while the device is 0..100 at 0.5 dB per point, so two
+    # device levels share one control step and 99 would be dragged to 100. Compared before the mute collapse below, because that
     # rewrites vol and would never match what was written.
     if [ "$vol$sw" = "$(cat "$PUSH_MARK" 2>/dev/null)" ]; then
         return 0
@@ -156,7 +155,8 @@ apply_host_volume() {
     [ "$vol$sw" != "$applied" ] || return 0
     # dB the host asked for -> the device's own loudness scale.
     dev=$(awk -v c="$vol" 'BEGIN {
-        v = (c <= 0) ? 0 : 100 * 2 ^ ((c - 100) / 10)
+        v = (c <= 0) ? 0 : 2 * c - 100
+        if (v < 0) v = 0
         if (v > 100) v = 100
         printf "%d", v + 0.5
     }')
@@ -180,7 +180,7 @@ unity_sink_input() {
 
 push_device_volume() {
     # Device volume -> the host's control. The inverse of apply_host_volume's
-    # curve: v = 100 * 2^((c-100)/10) solved for c.
+    # curve: v = 2*c - 100 solved for c.
     # `read` reports FAILURE at end-of-file without a trailing newline - which
     # is exactly how biscuit-audio writes these, `"%d" % pct` and nothing else -
     # while still assigning the variable. Testing its status silently skipped
@@ -195,7 +195,7 @@ push_device_volume() {
 
     c=$(awk -v v="$dvol" 'BEGIN {
         if (v <= 0) { print 0; exit }
-        c = 100 + 10 * log(v / 100.0) / log(2)
+        c = 50 + v / 2.0
         if (c < 0) c = 0
         if (c > 100) c = 100
         printf "%d", c + 0.5
