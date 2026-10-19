@@ -16,7 +16,7 @@ pkgname=linux-amazon-biscuit
 # r229 had not been built yet, and the project's docs number kernels by pkgrel,
 # so restarting the count would break every reference for no gain.
 pkgver=7.0.0_rc6
-pkgrel=244
+pkgrel=243
 install="$pkgname.pre-install $pkgname.pre-upgrade"
 pkgdesc="Amazon Echo Dot (2nd gen) mainline kernel fork"
 arch="aarch64"
@@ -157,7 +157,6 @@ source="
 	0122-dough-capture-timing-diagnostics.patch
 	0123-mt8163-biscuit-ramoops.patch
 	0124-bluetooth-accept-acl-as-peripheral.patch
-	0125-mt8163-biscuit-wifi-antenna-switch.patch
 	$pkgname.pre-install
 	$pkgname.pre-upgrade
 	mt6625l-wlan-20260823.tar.gz
@@ -542,7 +541,6 @@ c9ca1694c05ddb2ed72aff3aa839c0b7bb7607163071bb96362dbee25ba0a3ed416fc2275d5d2111
 cb75d8d6f0be8fd83c10743b6ce233f0626476f0cd4f3167b5ff22f16453efb8b40982201382236c522a7b926c47ee4d9889595ebc8d620fa6cebf784c6a882e  0122-dough-capture-timing-diagnostics.patch
 1b8e99591cd91c9a3c262633227ff66c47387797b98afe2837ed907f6fc5955d16565691b06f1ccaf81bb88c66bf064b9763b17b8cf9a8f558d9768420a1074b  0123-mt8163-biscuit-ramoops.patch
 5db6f83aace6ca9281a0c6374c0c03c89cb834de5fa13cfd9c9507c15bd396c204aa91ec227fbd5b2f674278c8921696cdc1c480b852addd1b7b05ebadb03498  0124-bluetooth-accept-acl-as-peripheral.patch
-ce6ca68c4b495569a1ad202911d29e464f3a09a673d26d86560d23aa8b0e0b1cc378423337a6634961219edc00f44d1580a2713d25c07a07217ceacc287968ab  0125-mt8163-biscuit-wifi-antenna-switch.patch
 3a19e82da05c37f901c0ae7efd7c75f0f8e54abff492242bdc644a5527a71141c6f5c7272474c3fa1177f2bbd0745ba4ab83d7ffad57f7febf0defe7a113cf06  linux-amazon-biscuit.pre-install
 3a19e82da05c37f901c0ae7efd7c75f0f8e54abff492242bdc644a5527a71141c6f5c7272474c3fa1177f2bbd0745ba4ab83d7ffad57f7febf0defe7a113cf06  linux-amazon-biscuit.pre-upgrade
 c92922821c8753dd56d99be8b1ace2694bf7d089423e27446e1517a9e6a8dfe9d40e7666650d197a6654b9c30338793c88990030a90d48efad0d2c46eb9badb1  mt6625l-wlan-20260823.tar.gz
