@@ -1765,6 +1765,10 @@ def inventory_state(fresh=False):
 _APK_STEP = re.compile(r"^\((\d+)/(\d+)\)\s+(\w+)\s+(\S+)")
 
 
+# Before a job's first apk call has written anything - or while it is still
+# deciding what to do - there is nothing to count yet.
+_STARTING = {"phase": "start", "done": None, "total": None, "text": "Starting"}
+
 _APK_PROGRESS = re.compile(r"^(\d+)/(\d+)\s+(\w+)")
 
 
@@ -1860,11 +1864,11 @@ def updates_state():
     job = netcfg.package_job()
     u["job"] = job if job and job.get("action") in system.JOB_ACTIONS else None
     if u["job"] and u["job"]["state"] == "running":
-        u["job"]["progress"] = job_progress()
+        u["job"]["progress"] = job_progress(u["job"].get("time") or 0) or _STARTING
     run = running_job()
     u["app_job"] = _with_labels(run) if run and run.get("action") in ("add", "del") else None
     if u["app_job"]:
-        u["app_job"]["progress"] = job_progress()
+        u["app_job"]["progress"] = job_progress(u["app_job"].get("time") or 0) or _STARTING
     u["now"] = int(time.time())
     return u
 
@@ -7937,13 +7941,15 @@ PAGES["about"] = async function () {
 // and "Step 3 of 12: Upgrading name" while apk works through the packages.
 function progressHtml(p) {
   if (!p) return "";
-  const bar = (pct) => '<progress max="100" value="' + pct +
-    '" style="width:100%;height:.5rem;accent-color:var(--accent)"></progress><br>';
+  // A bar is always shown: with a value while apk counts, and moving without
+  // one while it checks the package lists or runs its triggers.
+  const bar = (pct) => '<progress max="100"' + (pct == null ? "" : ' value="' + pct + '"') +
+    ' style="width:100%;height:.5rem;accent-color:var(--accent)"></progress><br>';
   // apk's own percentage when it reports one; otherwise the package count.
   if (p.percent != null)
     return bar(p.percent) + esc(p.text) + (p.total ? " (step " + p.done + " of " + p.total + ")" : "") +
            ": " + p.percent + "%";
-  if (p.phase !== "packages" || !p.total) return esc(p.text);
+  if (p.phase !== "packages" || !p.total) return bar(null) + esc(p.text);
   return bar(Math.round(100 * p.done / p.total)) +
          (p.unit === "source" ? "Source " : "Step ") + p.done + " of " + p.total + ": " + esc(p.text);
 }
