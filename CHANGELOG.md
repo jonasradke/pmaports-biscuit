@@ -12,6 +12,37 @@ Releases of the jonasradke fork end in `-jr` and continue the build numbers
 from r299; they are built by GitHub Actions and served from the fork's own
 feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
 
+## v1.2-jr (build r304)
+
+| | Version |
+|---|---|
+| `device-amazon-biscuit` and subpackages | 6-r304 |
+| `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
+| `amazon-biscuit-backup.zip`, `-restore.zip`, `-stock-restore.zip` | v3 each: only their NOTICE changed |
+
+- **Music Assistant speaker:** sendspin 8.0.0 with aiosendspin 9.1.1, which
+  matches what Music Assistant 2.10 serves. The player's id now comes from
+  its own key, so Music Assistant lists it as a new player; the old
+  `sendspin-cli-<name>` entry can be removed.
+- **The speaker plays in sync with the rest of a group, with no delay to set.**
+  It used to play about 45 ms late; every stream started about 40 ms off and
+  took 20 s to settle; and Music Assistant's static delay for it had no
+  effect. It now counts the whole path to the speaker, measured by the audio
+  processor itself, starts on time, and a static delay moves it at once.
+  After updating, set the Echo's static delay in Music Assistant back to 0.
+- **Full bass on an external speaker.** With something plugged into the
+  3.5 mm jack, the audio processor now skips what exists only for the Echo's
+  own small driver - the correction curve, the loudness push and the
+  multiband compressor, whose bass band took the bass of a real speaker
+  away - and keeps the EQ, the clip limiter and the volume curve. Unplugging
+  switches back by itself.
+- **Level:** a new Home Assistant slider (0 to -30 dB) sets this speaker's
+  loudness against others in a group. With every speaker on the same volume
+  number, Music Assistant's group volume (and Spotify Connect) then moves all
+  of them by the same amount.
+- The release's kernel source bundle is built from this repository and the
+  kernel actually shipped.
+
 ## v1.1.1-jr (build r300)
 
 | | Version |
