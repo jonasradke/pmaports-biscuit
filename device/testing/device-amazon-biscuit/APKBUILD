@@ -12,7 +12,7 @@ pkgrel=305
 # given to another build (installer/zip/releases.json).
 # Releases of the jonasradke fork carry a "-jr" suffix, so they can never be
 # mistaken for, or collide with, an upstream release of the same number.
-_release="v1.2.1-jr"
+_release="v1.2-jr"
 url="https://github.com/jonasradke/pmaports-biscuit"
 # Core is our own code (MIT) plus two vendored pieces that keep their own
 # licences: TweetNaCl-js (public domain, Unlicense) for the setup and settings

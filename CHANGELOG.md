@@ -12,14 +12,22 @@ Releases of the jonasradke fork end in `-jr` and continue the build numbers
 from r299; they are built by GitHub Actions and served from the fork's own
 feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
 
-## v1.2-jr (build r304)
+## v1.2-jr (build r305)
 
 | | Version |
 |---|---|
-| `device-amazon-biscuit` and subpackages | 6-r304 |
+| `device-amazon-biscuit` and subpackages | 6-r305 |
 | `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
 | `amazon-biscuit-backup.zip`, `-restore.zip`, `-stock-restore.zip` | v3 each: only their NOTICE changed |
 
+- **Wi-Fi reception is about 20 dB stronger, and dual-band networks are joined
+  on 5 GHz.** Nothing ever set the two control lines of the RF switch in front
+  of the Wi-Fi chip (ANT_SEL0/1), so the switch connected neither throw and
+  every band reached the radio only by leakage: two metres from the access
+  point, 2.4 GHz arrived at -84 dBm and 5 GHz at -93, and the Echo stayed on
+  2.4 GHz. wifi.start now connects the antenna before it loads the driver
+  (2.4 GHz -60, 5 GHz -76..-83 on the same spot), and prefers 5 GHz down to
+  -86 dBm. New dependency: libgpiod.
 - **Music Assistant speaker:** sendspin 8.0.0 with aiosendspin 9.1.1, which
   matches what Music Assistant 2.10 serves. The player's id now comes from
   its own key, so Music Assistant lists it as a new player; the old
