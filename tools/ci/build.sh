@@ -53,6 +53,11 @@ if [ ! -d "$APORTS/.git" ]; then
 	# pmbootstrap reads channels.cfg from origin/main, not the working tree.
 	git -C "$APORTS" fetch -q --depth 1 origin main
 fi
+# Download it now. The clone is partial, so pmbootstrap's own `git show` would
+# fetch the file, and git's "warning: redirecting to https://gitlab.nura.eco/..."
+# (where gitlab.postmarketos.org forwards since 2026-11-02) would land in the
+# output pmbootstrap parses as channels.cfg: "Failed to read channels.cfg".
+git -C "$APORTS" cat-file -p origin/main:channels.cfg > /dev/null 2>&1
 # The overlay is refreshed every run, so a reused tree builds this commit.
 rm -rf "$APORTS/device/testing/device-amazon-biscuit" \
 	"$APORTS/device/testing/linux-amazon-biscuit" "$APORTS/temp/bluez-alsa"
