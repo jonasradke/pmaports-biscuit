@@ -180,15 +180,7 @@ jobs:
             -p 'linux-amazon-biscuit-r243-source.tar.gz'
           sh tools/ci/kernel-source.sh upstream/linux-amazon-biscuit-r243-source.tar.gz \
             dist/apk/linux-amazon-biscuit-*.apk sources
-          cat > notes.md <<EOF
-          Build $BUILD of the [jonasradke fork](https://github.com/$GITHUB_REPOSITORY) of the
-          postmarketOS port for the Amazon Echo Dot 2. Install with the zips as
-          described in [INSTALL.md](https://github.com/$GITHUB_REPOSITORY/blob/$RELEASE/installer/INSTALL.md);
-          an installed Echo updates from the fork's feed,
-          https://jonasradke.github.io/pmaports-biscuit/edge.
-
-          Built by GitHub Actions from \`$GITHUB_SHA\`: [run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
-          EOF
+          sh tools/ci/release-notes.sh "$RELEASE" "$BUILD" "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > notes.md
           gh release create "$RELEASE" --verify-tag --title "$RELEASE" --notes-file notes.md \
             dist/zips/* dist/apk/*.apk sources/*
 

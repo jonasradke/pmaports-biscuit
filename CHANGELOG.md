@@ -14,32 +14,61 @@ feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
 
 ## v1.3-jr (build r307)
 
-| | Version |
-|---|---|
-| `device-amazon-biscuit` and subpackages | 6-r307 |
-| `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
-| `amazon-biscuit-backup.zip`, `-restore.zip`, `-stock-restore.zip` | v3 each (unchanged) |
+System updates can no longer break the voice assistant or the Music Assistant
+speaker, volume steps are even, and switching the wake word off now lasts.
+
+### Updating
+
+1. On the settings page, open **Updates** and press **Update**. The device
+   software and its apps update together, to 6-r307.
+2. **Restart** the Echo when it says "Restart to finish".
+3. **Turn the volume up.** Volume 100 is as loud as before, but below it the
+   same number now plays quieter. To keep the loudness you had, use the new
+   number:
+
+   | Before | 10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 | 90 |
+   |---|---|---|---|---|---|---|---|---|---|
+   | **Now** | 34 | 54 | 65 | 74 | 80 | 85 | 90 | 94 | 97 |
+
+   Music Assistant groups that also hold a Sonos through the
+   [Sonos Sendspin Bridge](https://github.com/jonasradke/sonos-sendspin-bridge)
+   need the bridge at 0.4.0 or later, which uses the same curve.
+4. **Then install the system updates** (Updates, System packages) whenever you
+   like. With r307 that is safe: see the first change below.
+
+### Changes
 
 - **System updates can no longer break the apps.** The voice assistant and
   the Music Assistant speaker carry environments built for one Python version
-  and particular system libraries, and nothing told apk so: the FFmpeg 9 now
-  on edge would have removed the library the speaker is linked to, and it
-  would not have started again. Each app now depends on exactly what it was
-  built against. An update installs Alpine's compatibility copy next to a
-  newer library, or leaves out only the package the apps cannot use, and
-  updates everything else. The Python hold the update job wrote into
+  and particular system libraries, and nothing told apk so. The FFmpeg 9 now
+  on edge would have removed the library the speaker is linked to
+  (`libavcodec.so.62`), and it would not have started again. Each app now
+  depends on exactly what it was built against: the Python minor version,
+  every shared library it links to or loads, and the system Python packages
+  below their next major version. An update installs Alpine's compatibility
+  copy next to a newer library (the speaker brings in `ffmpeg8-*` next to
+  FFmpeg 9), or leaves out only the package the apps cannot use, and updates
+  everything else. The Python hold the update job used to write into
   `/etc/apk/world` is taken out again, since the apps hold it themselves.
 - **Every volume step is the same size.** The volume curve is 0.5 dB per
-  point below 100 (it was 10 dB per halving, so a few points were 1.5 dB near
-  the top and 6-9 dB when listening quietly). Volume 100 is as loud as before;
-  below it, the old volume v sounds like 100 + 20 x log2(v/100) now, for
-  example 56 -> 83 and 13 -> 41, so turn the volume up after updating. USB
-  audio uses the same law.
+  point below 100. It was 10 dB per halving, so a press of Spotify's or a
+  remote's volume button was 1.5 dB near the top but 6-9 dB when listening
+  quietly. The old volume v sounds like 100 + 20 x log2(v/100) now (the table
+  above). USB audio uses the same law.
 - **The wake word stays off when it is switched off.** Choosing no wake word
   in Home Assistant was undone by the next restart or update, which loaded
   the default (Alexa) again.
 - **Updates show a progress bar all the way through**, including while the
   package lists are checked and while the last steps run.
+
+### Packages
+
+| | Version |
+|---|---|
+| `device-amazon-biscuit` and subpackages | 6-r307 |
+| `bluez-alsa` | 5.0.0-r1 (rebuilt, no change: Alpine edge now has its own 5.0.0-r0, and r1 keeps this one ahead) |
+| `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
+| `amazon-biscuit-backup.zip`, `-restore.zip`, `-stock-restore.zip` | v3 each (unchanged) |
 
 ## v1.2.1-jr (build r306)
 
