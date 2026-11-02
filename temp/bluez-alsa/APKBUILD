@@ -3,6 +3,12 @@
 # video to the Echo cannot hold the picture back and the sound lags it.
 # Drop this fork once Alpine packages 5.0.
 #
+# Alpine edge has packaged 5.0.0-r0 since 2026-11, the same version as this
+# fork, and pmbootstrap then skipped building it ("up to date"), so the
+# release build found no package of its own to ship. r1 keeps this fork
+# ahead until it is compared with Alpine's (service name, codecs) and
+# dropped.
+#
 # 5.0 renames bluealsa -> bluealsad and bluealsa-cli -> bluealsactl, with no
 # compatibility names. The OpenRC service stays "bluealsa" (see the initd).
 #
@@ -10,7 +16,7 @@
 # Maintainer: Bradley Saulteaux <-@bradso.to>
 pkgname=bluez-alsa
 pkgver=5.0.0
-pkgrel=0
+pkgrel=1
 pkgdesc="Bluetooth Audio ALSA Backend"
 url="https://github.com/Arkq/bluez-alsa"
 arch="all"
