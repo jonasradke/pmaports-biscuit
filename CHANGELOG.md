@@ -12,6 +12,35 @@ Releases of the jonasradke fork end in `-jr` and continue the build numbers
 from r299; they are built by GitHub Actions and served from the fork's own
 feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
 
+## v1.3-jr (build r307)
+
+| | Version |
+|---|---|
+| `device-amazon-biscuit` and subpackages | 6-r307 |
+| `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
+| `amazon-biscuit-backup.zip`, `-restore.zip`, `-stock-restore.zip` | v3 each (unchanged) |
+
+- **System updates can no longer break the apps.** The voice assistant and
+  the Music Assistant speaker carry environments built for one Python version
+  and particular system libraries, and nothing told apk so: the FFmpeg 9 now
+  on edge would have removed the library the speaker is linked to, and it
+  would not have started again. Each app now depends on exactly what it was
+  built against. An update installs Alpine's compatibility copy next to a
+  newer library, or leaves out only the package the apps cannot use, and
+  updates everything else. The Python hold the update job wrote into
+  `/etc/apk/world` is taken out again, since the apps hold it themselves.
+- **Every volume step is the same size.** The volume curve is 0.5 dB per
+  point below 100 (it was 10 dB per halving, so a few points were 1.5 dB near
+  the top and 6-9 dB when listening quietly). Volume 100 is as loud as before;
+  below it, the old volume v sounds like 100 + 20 x log2(v/100) now, for
+  example 56 -> 83 and 13 -> 41, so turn the volume up after updating. USB
+  audio uses the same law.
+- **The wake word stays off when it is switched off.** Choosing no wake word
+  in Home Assistant was undone by the next restart or update, which loaded
+  the default (Alexa) again.
+- **Updates show a progress bar all the way through**, including while the
+  package lists are checked and while the last steps run.
+
 ## v1.2.1-jr (build r306)
 
 | | Version |
