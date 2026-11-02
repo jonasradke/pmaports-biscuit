@@ -347,7 +347,6 @@ def updates():
         # the owner asks: [name, installed, available].
         "system": [parts for parts in (last or {}).get("sys", [])
                    if len(parts) == 3 and parts[0] in db],
-        "python": _read_text("/etc/apk/world").count("python3~") > 0,
         "reboot_required": os.path.exists(REBOOT_FLAG),
         "kernel": db.get(KERNEL, {}).get("version", ""),
         "kernel_available": avail.get(KERNEL, ""),

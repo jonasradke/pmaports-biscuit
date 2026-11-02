@@ -7004,8 +7004,8 @@ PAGES["app/*"] = async function (param) {
               sub: "The device software and its apps are released together, so they update together.",
               go: "#/updates" })
       : row({ icon: "download", title: "Update available: " + d.update,
-              sub: "Updates this package, and anything it needs, from postmarketOS. Python stays " +
-                   "at its current version.",
+              sub: "Updates this package, and anything it needs, from postmarketOS. What the apps " +
+                   "were built against is kept.",
               end: btn("Update", { cls: "small suggested", onclick: async () => {
                 const ok = await withPassword("Update " + d.name + "?",
                   "It installs in the background. Restart when it finishes.", "Update",
@@ -7934,8 +7934,9 @@ PAGES["about"] = async function () {
  * Updates
  *
  * The device's own packages come from its feed and update together. System
- * packages - postmarketOS's own - update only when asked, with Python held at
- * the minor version the apps' environments were built for.
+ * packages - postmarketOS's own - update only when asked. Whatever the apps'
+ * environments were built against (Python's minor version, the shared
+ * libraries they link) their packages depend on, so apk keeps it.
  * ===================================================================== */
 // A running package job's progress (see job_progress on the server): a bar
 // and "Step 3 of 12: Upgrading name" while apk works through the packages.
@@ -8142,7 +8143,7 @@ PAGES["updates"] = async function () {
       sub: "postmarketOS's own packages, from its edge channel." + partial,
       end: btn("Update all", { cls: "small suggested", disabled: busy, onclick: () => guarded({ action: "sysupdate" },
         "Update " + sys.length + " system packages?",
-        "Installs the newer postmarketOS packages. Python stays at its current version, so the apps keep " +
+        "Installs the newer postmarketOS packages. What the apps were built against is kept, so they keep " +
         "working. Takes a few minutes; restart when it finishes.", "Update") }) }));
   } else if (u.checked_at && !u.check_ok) {
     // Nothing could be checked: not "up to date".
@@ -8153,8 +8154,9 @@ PAGES["updates"] = async function () {
       sub: u.checked_at ? "Checked " + ago(u.checked_at, u.now) + "." + partial : "Check for updates above." }));
   }
   blocks.push(group("System packages", boxed(sysRows),
-    "Python is held at its current minor version, because the apps carry environments built for it; " +
-    "a system update that would move it is refused and says so."));
+    "The apps carry environments built for one Python version and particular libraries. An update keeps " +
+    "those: it installs a compatible copy next to a newer library, or leaves that one package out, and " +
+    "updates the rest."));
   if (sys.length) {
     blocks.push(fold("Available · " + sys.length, [group("", boxed(sys.map(([n, from, to]) => row({
       title: n, sub: esc(from) + " → " + esc(to), go: "#/app/" + encodeURIComponent(n) }))))]));

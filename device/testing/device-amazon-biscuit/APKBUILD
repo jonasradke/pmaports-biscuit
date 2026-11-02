@@ -1299,6 +1299,44 @@ package() {
 
 }
 
+# Add to depends what an application's virtualenv needs from the system:
+# python3 at the minor version it was built for, and every shared library it
+# uses but does not bundle, as so:<soname>.
+#
+# The voice assistant and the music speaker carry prebuilt virtualenvs whose
+# compiled modules are tied to that Python and to those libraries. tracedeps
+# is off for this package, so abuild never declared them, and a system update
+# was free to replace any of them: FFmpeg 9 (2026-11-02) would have taken away
+# the libavcodec.so.62 that av is linked to, and the speaker would never have
+# started again. Declared, apk keeps them. It installs Alpine's compatibility
+# package (ffmpeg8-libavcodec) next to the new version, or holds back only what
+# needs the newer one, and updates everything else - checked on an Echo with
+# `apk upgrade --simulate` against that FFmpeg 9.
+#
+# The linked libraries are read from the ELF headers. Those opened at run time
+# by name (ctypes, cffi) appear in no header, so the caller names them.
+#
+# It adds to depends itself, rather than printing them for a
+# depends="$depends $(...)": pmbootstrap reads a subpackage's depends= lines
+# with its own parser, and would take the command substitution for packages.
+_venv_depends() {   # RUNTIME-SONAMES DIR...
+	_runtime=$1
+	shift
+	command -v scanelf >/dev/null ||
+		die "scanelf is needed to find what the virtualenvs link to"
+	_py=$(cd "$1"/lib && ls -d python3.* 2>/dev/null | sed -n '1s/^python//p')
+	[ -n "$_py" ] || die "no lib/python3.* in $1"
+	depends="$depends python3~$_py"
+	_bundled=$(find "$@" -name '*.so*' -exec basename {} \; | sort -u)
+	# Only versioned sonames: an extension module may name plain libc.so,
+	# which musl's loader answers itself and no package provides.
+	# shellcheck disable=SC2086
+	for _so in $( { scanelf -R -q -F '%n#F' "$@" | tr ',' '\n'
+			printf '%s\n' $_runtime; } | grep -E '\.so\.[0-9]' | sort -u); do
+		printf '%s\n' "$_bundled" | grep -qxF "$_so" || depends="$depends so:$_so"
+	done
+}
+
 voice() {
 	pkgdesc="Voice assistant for the Amazon Echo Dot (2nd gen)"
 	# The linux-voice-assistant fork (Apache-2.0, modified - lva-src/) and a
@@ -1332,12 +1370,17 @@ voice() {
 	#   py3-ifaddr   the venv HAS zeroconf, but zeroconf imports ifaddr, which
 	#                it does not vendor - py3-zeroconf is NOT needed and pulling
 	#                it in was what accidentally satisfied ifaddr before
-	#   mpv-libs     libmpv.so for the player binding
+	#   mpv-libs     libmpv.so for the player binding (so:libmpv.so.2, from
+	#                _venv_depends below)
 	#
 	# portaudio is deliberately absent: the recipe this bundle came from listed
 	# it, but nothing in the venv links or imports it - soundcard talks to
 	# PulseAudio through cffi. Verified with readelf and an import sweep.
-	depends="$pkgname=$pkgver-r$pkgrel openblas libstdc++ py3-numpy py3-aiohttp py3-ifaddr mpv-libs"
+	#
+	# The system Python packages are held below their next major version, the
+	# one that may change the API the venv calls. Patch and minor releases go
+	# through; Python itself, and the libraries, are _venv_depends's.
+	depends="$pkgname=$pkgver-r$pkgrel openblas libstdc++ py3-numpy<3 py3-aiohttp<4 py3-ifaddr<1"
 
 	# NOT biscuit-va-leds.py. That file is imported as a LIBRARY by
 	# biscuit-settings.py, biscuit-ring.py, biscuit-earcon-map.py,
@@ -1357,6 +1400,9 @@ voice() {
 	amove etc/runlevels/default/biscuit-voice-assistant
 	amove etc/runlevels/default/biscuit-va-leds
 	amove usr/share/doc/$pkgname/voice-bundle
+	# libmpv by python-mpv's ctypes, libpulse by soundcard's cffi.
+	_venv_depends 'libmpv.so.2 libpulse.so.0' \
+		"$subpkgdir"/usr/lib/linux-voice-assistant "$subpkgdir"/usr/lib/biscuit-tflite
 }
 
 sendspin() {
@@ -1393,7 +1439,13 @@ sendspin() {
 	# zeroconf. sendspin 8 imports numpy directly and aiosendspin needs aiohttp;
 	# both were only installed because the voice bundle depends on them, so a
 	# speaker without voice would not start.
-	depends="$pkgname=$pkgver-r$pkgrel portaudio py3-zeroconf ffmpeg-libs py3-numpy py3-aiohttp"
+	#
+	# Not ffmpeg-libs or portaudio by name any more: _venv_depends below
+	# declares the exact libraries, so:libavcodec.so.62 and the rest, and
+	# so:libportaudio.so.2. ffmpeg-libs alone let FFmpeg 9 replace the
+	# libraries av was built against. The system Python packages are held
+	# below their next major version, as for the voice bundle.
+	depends="$pkgname=$pkgver-r$pkgrel py3-zeroconf<1 py3-numpy<3 py3-aiohttp<4"
 	amove usr/lib/sendspin
 	amove etc/init.d/biscuit-sendspin
 	amove usr/bin/biscuit-sendspin-volume
@@ -1402,6 +1454,8 @@ sendspin() {
 	amove usr/bin/biscuit-sendspin-watchdog
 	amove etc/init.d/biscuit-sendspin-watchdog
 	amove etc/runlevels/default/biscuit-sendspin-watchdog
+	# libportaudio by sounddevice's cffi.
+	_venv_depends libportaudio.so.2 "$subpkgdir"/usr/lib/sendspin
 }
 
 pulseaudio() {
@@ -1468,7 +1522,7 @@ ce517e42ca7c17ec6dccaa9e1ff7741aa0fe74ef8bfb40198d0c2a02566430f07a4c07d15baaf556
 cba0584c984700c8be668c7c8e42cb492195e3baad1779a1087cac9c2aa0d79880ac8bb2155dc8766bd5a263184badaa339fcd83760c08e5b250a1470935ce9d  biscuit-amp-wait
 9ae3e1c68d51124df1280436ee3325b509738e4251d79c29106d5db995e2af89427694eb6ee7dca0675e01c5e45a223d971bd4a66b6998bc823e4e41f43a0971  biscuit-silence.wav
 03ef53c970e9c9bd8f74dc767052c14dee9c974a7d61805837d12df9954472240a2d5d8ad7163f1e2fa7d146d8b76d457e7984912fe088553b6e92ac870f68e1  biscuit-miccal.py
-d75063cc7a4776a2e57418499c7db06828e8345bdeab5d4700d3a5c5ad697c3b8dbdce654d112662a45241f4ce4ca3134912e136e33818f86f484c9dbf9827b1  biscuit-settings.py
+edebbb19ef930151442934957ba70a8c2bab8310843d63a3ef8cb2d93da23bddb37809a1c88d95302f7eb238a9b3b67d4473d4c413a4123694d7cca419dc644c  biscuit-settings.py
 94f48cebc2fbf393182c323accc9e6f7c56bb14e24d6136b451ec131bf8d04aedbcd95cb103a12c2530b74bd610a69873c0acc60d410ce58fd5b975766b87fe3  biscuit-netcfg.py
 7aa697a7d0ece2dfc104ccc9dc6319cb2e95682f2e330146065c39df31dcddd9161877fdaf5959db71a4f10c550b7dc9e6cf51077faf783053fe7cc005b77330  biscuit-btcast.sh
 5169baea2ff90e73f348818acef3ca8c97bfd725f7f170288768adfb26c5da721a25c7b765ea6eca37e4ab42c3ef5151b8d55bb1ed4367fad4465d097f420153  biscuit-btproxy.py
@@ -1507,7 +1561,7 @@ cf5f4d8aa741c6d35d193761f34765a000f1c5b4c56f32e30a6c609d8a2fd6c5aafa17099a1d54b9
 e59783b0829f5e2e2e055cbbec7d85b865c58208d5b99df21297395f4e59a1d14a1129dd07efb81d5a2f7c554393ec44d1e90b70277fe583dce8589b4e1eda1c  nacl-fast.min.js
 8a0045cec4092992ef98aab5827ea5a82a6bba4c753fd51f092e0424dd112b4b6dab3df2013cf9618547950d233912a30046bfe2e573fbe4de5d28e3ac4a6508  biscuit-apps.json
 bcbc4188cc5549e0f221727b59cc72a77b98e52cf4c80f4cd0b0c56a99ffbe1d08a58b1acf890af2f26b5da43486550622af3555137d8eaa6f92cb0572b9cfab  biscuit-reset.conf
-c3bcc3a14be404547498e5d28a87dfac04d2723129156f7787324489d18c0633bcf17a8d28b04d77bbb18429bfceba35331c8ceec9291bc98163fffb9fa3766c  biscuit-pkgjob.sh
+b018fa002cc2804d1979cab9d85de156df4d82e268f3b32f325a31f0be3eaf2d61df8dbbc92e612faffd9af1d869e6e2b897a7ca0c6569859055ac30e4c057f0  biscuit-pkgjob.sh
 126132ea25d332c34213e11163f9a9589a928f754d70392d8d977c9baba4c27e6fef67cc9bd7e42df6361d15b606b60704e2f6130cc81191dd71b233ac609749  biscuit-boot-update
 daf9921acb046663b7f6b04f81fc3c8e77900922485e59f4f1473ecc555f4cd542825734c8e262a6616219f03070fbc22ca2095b8059808d6c5b69551a90328a  pair-session.sh
 80f7e76cab618ae6c963a652dc1be35421f1c083ac22317b7be57e7889c4213f8ddd3dde7889a584c6aa56527fecaa5348f3c4f5c9a8900e59e3adbb4e277437  device-amazon-biscuit.post-install
@@ -1594,7 +1648,7 @@ f80fd53f8d6f4cc136b75f459fc3b9663d84415ef1f184e5614e4e0c07cc120c512f846950cfb560
 56b2e83867d1c9002392c8f2341c0ce67257aeff9619ec282abc7d7e5317b7e9f95043ab0a0b6cc789488889866b03583c9e85c0407f4559641188d713f93f22  biscuit-ring-fx.py
 ba08f5eabaa4ffcba25e7123c4def7ce3e6c574c9dffdefb31c88f54557ead9ffd8190c6fb28c60a6ea23f7bad89b626bc17af50cf3fe54d786cfe4ba6701910  biscuit_ring_config.py
 2865dc7fe8a445d15a7e8229df17a0be393cfbb42014fafd6cadd62d15b7407b64b89832d98d25dd139710e84577499c2ab2d23ce74e5c2baa5433059c465a9e  biscuit_services.py
-2b170a17b5ca58fb1611e129b8ff6020ad3e686824f11b4b4cdc3124a75b43b53ddaaca543ec9bf5c3d4147974ed4c10d2cc56f56b0aca882a59f343c563a3a0  biscuit_system.py
+6c29f1bf25299bfe1e337a6fe0f53436db4ab588ced6f4e1d83bc4e0fd445dd5e708324e71e7ae11ddb4be361c889a62d8609d13564199c4ce024dfdbaefdd63  biscuit_system.py
 4ae58e73084c143f71c98fee94728cadc6150aaa648c897738bdf984bf66b22db6775dadcfc858463092692d33f73de88b4fa9eb0e5c04c6876f860ba28c12ae  biscuit-voice-assistant.initd
 7ab07f402e561ce4859c4a9415721570250a8a08fa931aa29ec08c48cfe9ef830623036abc8a0cefb967cab57a5856f9b39d808790b61b03829f3569a15dc4ce  biscuit-voice-assistant-wait.sh
 d76f7aa7a6accc715af222416a1f3eb31f25ba28a9a32394f96e7f041e2fffc01861f162b063ee42dce5500f35e4ef7510717b14e266361a740c0d08ddd376fb  biscuit-va-leds.initd

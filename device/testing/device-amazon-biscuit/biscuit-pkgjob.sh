@@ -632,21 +632,22 @@ finish_update() {   # WHAT-WAS-DONE
 	esac
 }
 
-# Hold Python at the minor version the apps' environments were built for.
+# Take out the Python hold this job used to write into the world file.
 #
 # The voice assistant and music speaker carry their own Python environments,
-# built against one minor version, and each compiled module in them is tied to
-# it. A system upgrade that moved python3 from 3.14 to 3.15 would leave both
-# unable to start. `python3~3.14` in the world file lets patch releases through
-# and nothing else; when edge moves on, apk refuses the upgrade and says so,
-# which is the right outcome until the apps are rebuilt.
-pin_python() {
-	_mm=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)
-	[ -n "$_mm" ] || return 0
-	grep -qx "python3~$_mm" "$WORLD" && return 0
-	sed -i '/^python3\([~=<>].*\)\{0,1\}$/d' "$WORLD"
-	echo "python3~$_mm" >> "$WORLD"
-	log "holding python3 at $_mm"
+# tied to one minor version of Python and to the shared libraries they were
+# built against. Until r307 this job held `python3~<minor>` in the world file
+# for them, and nothing held the libraries: an update to FFmpeg 9 would have
+# taken the speaker's libavcodec.so.62 away. Since r307 each app package
+# depends on all of it itself (_venv_depends in the APKBUILD), which holds for
+# any apk run, not only this job's. The world entry is then redundant, and
+# harmful once an app is rebuilt for the next Python: the hold for the old one
+# would refuse that app update.
+unpin_python() {
+	grep -q '^python3[~=<>]' "$WORLD" || return 0
+	sed -i '/^python3[~=<>]/d' "$WORLD"
+	grep -qx python3 "$WORLD" || echo python3 >> "$WORLD"
+	log "python3 hold taken out of the world file: the apps' own packages hold what they need"
 }
 
 # Keep the boot-deploy that can build this Echo's boot image.
@@ -686,7 +687,7 @@ hold_boot_deploy() {
 # Update postmarketOS's own packages: those named, or all of them. The kernel
 # is not on any feed, so it stays as installed; so does anything pinned.
 update_system() {
-	pin_python
+	unpin_python
 	hold_boot_deploy
 	if [ -n "$PACKAGES" ]; then
 		# shellcheck disable=SC2086
