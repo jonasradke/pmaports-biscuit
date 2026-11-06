@@ -41,6 +41,7 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     SubscribeStatesRequest,
     SubscribeVoiceAssistantRequest,
     SwitchCommandRequest,
+    UpdateCommandRequest,
     VoiceAssistantAnnounceFinished,
     VoiceAssistantAnnounceRequest,
     VoiceAssistantAudio,
@@ -411,6 +412,7 @@ class VoiceSatelliteProtocol(APIServer):
         self.register_pending_switches()         # BISCUIT
         self.register_pending_sensors()          # BISCUIT
         self.register_pending_binary_sensors()   # BISCUIT
+        self.register_pending_updates()          # BISCUIT
         # Materialise ButtonEventSensorEntity if a peripheral already registered
         # button support before this satellite was constructed (e.g. on an HA
         # reconnect while the peripheral container stayed connected to LVA).
@@ -515,6 +517,38 @@ class VoiceSatelliteProtocol(APIServer):
             entity.update_state(
                 getattr(self.state, "peripheral_binary_sensor_values", {}).get(spec.object_id))
             entities[spec.object_id] = entity
+            self.state.entities.append(entity)
+
+    def register_pending_updates(self) -> None:
+        """Materialise Update entities peripherals registered. BISCUIT."""
+        from .entity import PeripheralUpdateEntity
+
+        entities = getattr(self.state, "peripheral_update_entities", None)
+        if entities is None:
+            entities = self.state.peripheral_update_entities = {}
+        for object_id, spec in getattr(self.state, "pending_updates", {}).items():
+            existing = entities.get(object_id)
+            if existing is not None:
+                existing.server = self
+                if existing not in self.state.entities:
+                    self.state.entities.append(existing)
+                continue
+
+            def _command(command, oid=object_id):
+                self._emit("update_command", {"object_id": oid, "command": command})
+
+            entity = PeripheralUpdateEntity(
+                server=self,
+                key=self._peripheral_key(object_id),
+                name=spec["name"],
+                object_id=object_id,
+                on_command=_command,
+                device_class=spec["device_class"],
+                icon=spec["icon"],
+                meta=spec["meta"],
+            )
+            entity.update_state(getattr(self.state, "peripheral_update_values", {}).get(object_id))
+            entities[object_id] = entity
             self.state.entities.append(entity)
 
     def register_pending_numbers(self) -> None:
@@ -1032,7 +1066,7 @@ class VoiceSatelliteProtocol(APIServer):
                 yield from entity.handle_message(SubscribeHomeAssistantStatesRequest())
         elif isinstance(
             msg,
-            (ListEntitiesRequest, SubscribeHomeAssistantStatesRequest, MediaPlayerCommandRequest, SwitchCommandRequest, NumberCommandRequest, SelectCommandRequest, LightCommandRequest),
+            (ListEntitiesRequest, SubscribeHomeAssistantStatesRequest, MediaPlayerCommandRequest, SwitchCommandRequest, NumberCommandRequest, SelectCommandRequest, LightCommandRequest, UpdateCommandRequest),
         ):
             for entity in self.state.entities:
                 yield from entity.handle_message(msg)

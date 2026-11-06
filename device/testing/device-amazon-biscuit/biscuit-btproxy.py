@@ -190,6 +190,19 @@ def settings_port():
     return port if 0 < port < 65536 else DEFAULT_SETTINGS_PORT
 
 
+def release_label():
+    """The release this Echo runs, as the settings page names it: v1.4."""
+    try:
+        with open("/usr/share/biscuit/release", encoding="utf-8") as f:
+            for line in f:
+                key, _, value = line.strip().partition("=")
+                if key == "release" and value:
+                    return value.split("-", 1)[0]
+    except OSError:
+        pass
+    return ""
+
+
 def friendly_name():
     return "%s Bluetooth Proxy" % socket.gethostname()
 
@@ -573,6 +586,7 @@ class ProxyConnection(threading.Thread):
         info.project_name = "postmarketOS.Amazon Echo Dot (2016)"
         info.model = "Amazon Echo Dot (2016)"
         info.manufacturer = "postmarketOS"
+        info.project_version = release_label()
         # This is what puts "Visit" on the device page in Home Assistant.
         info.webserver_port = settings_port()
         flags = FEATURE_PASSIVE_SCAN | FEATURE_RAW_ADVERTISEMENTS

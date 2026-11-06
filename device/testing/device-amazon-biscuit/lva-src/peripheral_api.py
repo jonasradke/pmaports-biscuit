@@ -228,10 +228,12 @@ class LVACommand(str, Enum):
     REGISTER_SENSOR = "register_sensor"      # BISCUIT
     REGISTER_SWITCH = "register_switch"      # BISCUIT
     REGISTER_BINARY_SENSOR = "register_binary_sensor"  # BISCUIT
+    REGISTER_UPDATE = "register_update"      # BISCUIT
     REGISTRATIONS_DONE = "registrations_done"          # BISCUIT
     RING_CONFIG_STATE = "ring_config_state"
     SENSOR_STATE = "sensor_state"            # BISCUIT
     BINARY_SENSOR_STATE = "binary_sensor_state"        # BISCUIT
+    UPDATE_STATE = "update_state"            # BISCUIT
     ENTITY_STATE = "entity_state"            # BISCUIT
     LIGHT_STATE = "light_state"              # BISCUIT
 
@@ -666,6 +668,16 @@ class PeripheralAPIServer:
                     entity.update_state(value)
                     self._broadcast([entity._get_state_message()])  # pylint: disable=protected-access
 
+        elif command == LVACommand.UPDATE_STATE:
+            data = msg.get("data") or {}
+            object_id = str(data.get("object_id", ""))
+            if object_id:
+                self._kept(state, "peripheral_update_values")[object_id] = data
+                entity = getattr(state, "peripheral_update_entities", {}).get(object_id)
+                if entity is not None:
+                    entity.update_state(data)
+                    self._broadcast([entity._get_state_message()])  # pylint: disable=protected-access
+
         elif command == LVACommand.ENTITY_STATE:
             await self._entity_state(msg.get("data") or {})
 
@@ -686,6 +698,8 @@ class PeripheralAPIServer:
             self._register_switch(msg.get("data") or {}, satellite)
         elif command == LVACommand.REGISTER_BINARY_SENSOR:
             self._register_binary_sensor(msg.get("data") or {}, satellite)
+        elif command == LVACommand.REGISTER_UPDATE:
+            self._register_update(msg.get("data") or {}, satellite)
 
         elif command == LVACommand.REGISTER_LIGHT:
             self._register_light(msg.get("data") or {}, satellite)
@@ -1045,6 +1059,36 @@ class PeripheralAPIServer:
             self._entities_changed("switch", object_id)
         if changed is not spec and "initial_value" in data:
             self._set_switch_value(object_id, spec.initial_value)
+
+    def _register_update(self, data: Dict[str, Any], satellite: Any) -> None:
+        """Register an Update declared by a peripheral. BISCUIT addition.
+
+        A plain dict on the state rather than a *Registration dataclass, since
+        models.py comes from the venv tarball. A repeat that changes nothing is
+        a no-op, so a reconnecting peripheral costs no HA reconnect.
+        """
+        object_id = str(data.get("object_id", "")).strip()
+        state = self._state
+        if not object_id or state is None:
+            return
+        spec = {
+            "name": str(data.get("name", "Update")),
+            "icon": str(data.get("icon", "")),
+            "device_class": str(data.get("device_class", "")),
+            "meta": entity_meta(data),
+        }
+        specs = self._kept(state, "pending_updates")
+        if specs.get(object_id) == spec:
+            return
+        specs[object_id] = spec
+        _LOGGER.info("Update registered: %s", object_id)
+        entity = getattr(state, "peripheral_update_entities", {}).get(object_id)
+        if entity is not None:
+            entity.name, entity.icon, entity.device_class = spec["name"], spec["icon"], spec["device_class"]
+            entity.meta = dict(spec["meta"])
+        if satellite is not None:
+            satellite.register_pending_updates()
+        self._entities_changed("update", object_id)
 
     def _register_light(self, data: Dict[str, Any], satellite: Any) -> None:
         """Register a Light declared by a peripheral.

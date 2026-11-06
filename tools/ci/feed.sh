@@ -4,6 +4,7 @@
 #
 #   $SITE/edge/aarch64/*.apk, APKINDEX.tar.gz   what apk reads
 #   $SITE/biscuit-apk-jr.rsa.pub                 the key the Echo verifies with
+#   $SITE/notes/<release>.md                     what's new, read before an update
 #   $SITE/index.html                             how to add the feed by hand
 #
 # The private key comes from $APK_SIGNING_KEY (PEM text; the repository secret
@@ -41,6 +42,18 @@ SITE=$(cd "$SITE" && pwd)     # docker -v takes a relative path as a volume name
 cp "$SRC"/*.apk "$SITE/edge/$ARCH/"
 cp "$PUB" "$SITE/"
 : > "$SITE/.nojekyll"
+
+# Each release's section of the changelog, for the Echo to show before the update
+# is installed: on its Updates page and in Home Assistant. How to install it is
+# said there already, and the list of package versions helps nobody deciding.
+mkdir -p "$SITE/notes"
+awk -v dir="$SITE/notes" '
+	/^## v/ { if (out) close(out); out = dir "/" $2 ".md"; skip = 0; next }
+	/^## / { if (out) close(out); out = ""; next }
+	!out { next }
+	/^### / { skip = ($0 ~ /^### (Updating|Installing|Packages)/) }
+	skip { next }
+	{ print > out }' "$REPO/CHANGELOG.md"
 
 # apk-tools 2's index format, which apk-tools 3 on the Echo still reads.
 docker run --rm -v "$SITE/edge/$ARCH:/feed" -v "$KEYDIR:/keys:ro" alpine:3.21 sh -ec '

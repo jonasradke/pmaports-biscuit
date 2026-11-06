@@ -44,7 +44,16 @@
 #
 # BISCUIT_PKGJOB_ORIGIN says who started the job - "setup", or "retry" for the
 # settings page's automatic retry of what setup could not install - and is
-# recorded with it; anything else counts as the owner, on the settings page.
+# recorded with it; "ha" is Home Assistant's Install on the Echo's update entity;
+# anything else counts as the owner, on the settings page.
+#
+# HOME ASSISTANT'S INSTALL RESTARTS BY ITSELF
+#
+# The settings page says "Restart to finish" and has a button for it. An update
+# entity has neither: in Home Assistant an install is over when the device comes
+# back on the new version, as it is for every ESPHome device. So an update it
+# started restarts the Echo at the end - only after one that fully succeeded,
+# boot image included. See restart_for_ha.
 #
 # ONE APK AT A TIME
 #
@@ -81,6 +90,8 @@ set -u
 : "${BISCUIT_PKGJOB_LOG:=/var/log/biscuit-pkgjob.log}"
 : "${BISCUIT_APK_WORLD:=/etc/apk/world}"
 : "${APK_REPOSITORIES:=/etc/apk/repositories}"
+: "${BISCUIT_RELEASE_FILE:=/usr/share/biscuit/release}"
+: "${BISCUIT_REBOOT:=reboot}"
 RUNDIR=$BISCUIT_PKGJOB_RUNDIR
 STATUS=$RUNDIR/status
 APPS_STATUS=$RUNDIR/apps-status
@@ -105,7 +116,7 @@ shift 2>/dev/null || true
 PACKAGES="$*"
 
 case "${BISCUIT_PKGJOB_ORIGIN:-}" in
-	setup|retry) ORIGIN=$BISCUIT_PKGJOB_ORIGIN ;;
+	setup|retry|ha) ORIGIN=$BISCUIT_PKGJOB_ORIGIN ;;
 	*) ORIGIN="" ;;
 esac
 
@@ -503,6 +514,40 @@ newer_ours() {
 		print n, substr($1, length(n) + 2), $3 }'
 }
 
+# The release a newer device package is, from its description on the feed:
+# "..., release v1.5-jr" (the APKBUILD's pkgdesc). The index is signed, so this is
+# as trustworthy as the package itself, and needs no fetch of its own. Empty for a
+# build that names no release: the pages then call it r309.
+feed_release() {   # VERSION
+	apk query --format yaml --fields name,version,description --available device-amazon-biscuit 2>/dev/null |
+		awk -v want="$1" '
+			/^ *version:/ { v = $2 }
+			/^ *description:/ && v == want && match($0, /release v[0-9][0-9.]*(-[a-z]+)?/) {
+				print substr($0, RSTART + 8, RLENGTH - 8); exit
+			}'
+}
+
+# What's new in a release, for the Updates page and Home Assistant to show before
+# it is installed. Published next to the feed (tools/ci/feed.sh), over the feed's
+# own HTTPS. Only ever shown as text. No notes is no failure: the pages then link
+# to the release instead, so nothing here may fail a check.
+NOTES_MAX=32768
+fetch_notes() {   # RELEASE, or nothing when no update waits
+	_f=$RUNDIR/release-notes-$1.md
+	[ -n "$1" ] && [ -s "$_f" ] && return 0
+	rm -f "$RUNDIR"/release-notes-*
+	[ -n "$1" ] || return 0
+	_repo=$(grep -v '^[[:space:]]*#' "$APK_REPOSITORIES" 2>/dev/null | grep -F "$FEED_MATCH" | head -n1)
+	[ -n "$_repo" ] || return 0
+	if wget -q -T 15 -O "$_f.tmp" "${_repo%/*}/notes/$1.md" 2>/dev/null; then
+		head -c "$NOTES_MAX" "$_f.tmp" > "$_f"
+	else
+		log "no release notes for $1"
+	fi
+	rm -f "$_f.tmp"
+	return 0
+}
+
 # The settings page reads this to say what is available and when it last looked.
 # `sys=` lines are everything else apk could upgrade, which this job never
 # does: the Apps page marks them, so the owner can see what a newer image
@@ -519,12 +564,17 @@ record_check() {   # OK NEWER [WHY]
 	_sys=$(apk version -l '<' 2>/dev/null | awk 'NR > 1 && $2 == "<" {
 		n = $1; sub(/-[^-]+-r[0-9]+$/, "", n)
 		print n, substr($1, length(n) + 2), $3 }' | grep -Ev "$OURS_RE")
+	_core_to=$(printf '%s\n' "$2" | awk '$1 == "device-amazon-biscuit" { print $3 }')
+	_target=""
+	[ -n "$_core_to" ] && _target=$(feed_release "$_core_to")
+	fetch_notes "$_target"
 	{
 		echo "checked=$(date +%s)"
 		echo "ok=$1"
 		echo "why=${3:-}"
 		[ -n "$2" ] && printf '%s\n' "$2" | sed 's/^/upd=/'
 		[ -n "$_sys" ] && printf '%s\n' "$_sys" | sed 's/^/sys=/'
+		[ -n "$_target" ] && echo "target_release=$_target"
 		echo "other=$(printf '%s' "$_sys" | grep -c .)"
 	} > "$RUNDIR/updates.tmp"
 	mv "$RUNDIR/updates.tmp" "$RUNDIR/updates"
@@ -558,7 +608,16 @@ update_ours() {   # NEWER
 	# Services keep running the old code, and the boot-time parts of the core
 	# only run at boot, so the update is finished by a restart.
 	touch "$RUNDIR/reboot-required"
+	# As the pages name it, from the file the update just installed: v1.5, or
+	# r309 for a build with no release of its own.
 	_to=$(printf '%s\n' "$1" | awk '$1 == "device-amazon-biscuit" { print $3 }')
+	_name=$(sed -n 's/^release=//p' "$BISCUIT_RELEASE_FILE" 2>/dev/null)
+	_built=$(sed -n 's/^build=//p' "$BISCUIT_RELEASE_FILE" 2>/dev/null)
+	if [ -n "$_name" ] && [ "$_built" = "$_to" ]; then
+		_to=${_name%-[a-z]*}
+	elif [ -n "$_to" ]; then
+		_to=r${_to##*-r}
+	fi
 	finish_update "Updated to ${_to:-the latest version}"
 	log "updated: $_want"
 }
@@ -630,6 +689,19 @@ finish_update() {   # WHAT-WAS-DONE
 		log "boot image after the update: not written (exit $_brc)"
 		;;
 	esac
+}
+
+# The end of an update Home Assistant started: see the header. Not after one that
+# failed or left a boot slot in doubt (finish_update's status says so), and not
+# when nothing was installed.
+restart_for_ha() {
+	[ "$ORIGIN" = ha ] || return 0
+	grep -qx 'state=ok' "$STATUS" || return 0
+	[ -e "$RUNDIR/reboot-required" ] || return 0
+	[ ! -e "$RUNDIR/boot-damaged" ] || return 0
+	log "restarting to finish the update Home Assistant started"
+	sleep 2
+	$BISCUIT_REBOOT
 }
 
 # Take out the Python hold this job used to write into the world file.
@@ -941,6 +1013,7 @@ elif [ "$ACTION" = "check" ] || [ "$ACTION" = "update" ]; then
 	update_ours "$_new" || exit 1
 	record_check 1 "" "$_part"
 	log "update complete"
+	restart_for_ha
 else
 	# Collected before the delete, while the package is still installed.
 	# shellcheck disable=SC2086

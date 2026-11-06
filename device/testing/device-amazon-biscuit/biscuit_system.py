@@ -132,6 +132,7 @@ def release_tag(version):
 # APKBUILD's _release: release=v1.0 and build=6-r295. Builds before v1.0 have
 # no file, and are named by their build number alone.
 RELEASE_FILE = "/usr/share/biscuit/release"
+RELEASE_NAME = re.compile(r"v[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?")
 
 
 def release():
@@ -143,7 +144,7 @@ def release():
         key, _, value = line.partition("=")
         fields[key.strip()] = value.strip()
     name, build = fields.get("release", ""), fields.get("build", "")
-    if not (re.fullmatch(r"v[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+)?", name) and re.fullmatch(r"[0-9][0-9.]*-r[0-9]+", build)):
+    if not (RELEASE_NAME.fullmatch(name) and re.fullmatch(r"[0-9][0-9.]*-r[0-9]+", build)):
         return {"name": "", "build": ""}
     return {"name": name, "build": build}
 
@@ -156,11 +157,25 @@ def release_name(version):
     return r["name"] if version and version == r["build"] else ""
 
 
-def source_links(version):
+def short_release(name):
+    """v1.4-jr -> v1.4: the name as a person reads it. The suffix keeps the
+    fork's tags apart from upstream's, and says nothing to anyone looking at
+    their own Echo. Tags and links keep the whole name."""
+    return re.sub(r"-[a-z]+$", "", name or "")
+
+
+def display_version(version, name=""):
+    """How one version of the device package is named wherever a person sees
+    it: its release, or r309 for a build that has none."""
+    name = name or release_name(version)
+    return short_release(name) or release_tag(version) or (version or "")
+
+
+def source_links(version, name=""):
     src = manifest().get("source", {})
     repo, path = src.get("repo", ""), src.get("path", "")
     tag = release_tag(version)
-    name = release_name(version)
+    name = name or release_name(version)
     ref = tag or "main"
     return {
         "repo": repo,
@@ -313,21 +328,59 @@ def _kv(path):
     return out
 
 
+def _available(mine, last):
+    """What the last check found newer of ours, {name: version}, and the build
+    to name for it: the device package's. The kernel has versions of its own and
+    is reported separately."""
+    avail = {}
+    if last:
+        for parts in last["upd"]:
+            if len(parts) == 3 and parts[0] in mine:
+                avail[parts[0]] = parts[2]
+    device = {n: v for n, v in avail.items() if n != KERNEL}
+    return avail, device.get(CORE) or (max(device.values()) if device else "")
+
+
+def _target_name(last):
+    """The release the feed's newer device package said it was, or ""."""
+    name = (last or {}).get("target_release", "")
+    return name if RELEASE_NAME.fullmatch(name) else ""
+
+
+# The most of a release's notes passed on. The peripheral connection that takes
+# them to Home Assistant refuses a message over 64 KiB, and JSON can double text.
+NOTES_MAX_CHARS = 16000
+
+
+def release_notes(name):
+    """What's new in a release, as the package job fetched it (markdown), or "".
+    Text from the web: pages escape it, and it is never run or parsed further."""
+    if not RELEASE_NAME.fullmatch(name or ""):
+        return ""
+    text = _read_text(os.path.join(PKG_RUNDIR, "release-notes-%s.md" % name)).strip()
+    return text[:NOTES_MAX_CHARS]
+
+
+def update_notice():
+    """What every page's banner needs, cheaply: every API answer carries it."""
+    mine = ours()
+    last = _kv(UPDATES_FILE)
+    avail, target = _available(mine, last)
+    name = _target_name(last) if target == avail.get(CORE) else ""
+    return {"target": target, "name": short_release(name),
+            "kernel": avail.get(KERNEL, ""),
+            "restart": os.path.exists(REBOOT_FLAG),
+            "damaged": boot_damaged()}
+
+
 def updates():
     """The last check, what is installed, and whether a restart is owed."""
     db = installed()
     mine = ours(db)
     core_v = mine.get(CORE, "")
     last = _kv(UPDATES_FILE)
-    avail = {}
-    if last:
-        for parts in last["upd"]:
-            if len(parts) == 3 and parts[0] in mine:
-                avail[parts[0]] = parts[2]
-    # The release to name is the device package's. The kernel has versions
-    # of its own and is reported separately.
-    device = {n: v for n, v in avail.items() if n != KERNEL}
-    target = device.get(CORE) or (max(device.values()) if device else "")
+    avail, target = _available(mine, last)
+    target_name = _target_name(last) if target == avail.get(CORE) else ""
     return {
         "installed": mine,
         "version": core_v,
@@ -340,7 +393,9 @@ def updates():
         "check_why": (last or {}).get("why", ""),
         "available": avail,
         "target": target,
-        "target_links": source_links(target) if target else None,
+        "target_name": target_name,
+        "target_notes": release_notes(target_name),
+        "target_links": source_links(target, target_name) if target else None,
         "links": source_links(core_v),
         "other_updates": int(last.get("other", "0") or 0) if last else None,
         # Newer postmarketOS packages the last check found, installed only when
@@ -438,16 +493,103 @@ def set_auto_check(on):
 JOB_ACTIONS = ("check", "update", "sysupdate", "boot", "bootrollback")
 
 
-def start_job(action, packages=None):
+def start_job(action, packages=None, origin=""):
     """check | update | sysupdate | boot | bootrollback, detached. The caller
     reads the status file afterwards. sysupdate takes system packages, or none
-    for all of them; boot writes the boot image the installed kernel builds."""
+    for all of them; boot writes the boot image the installed kernel builds.
+    origin says who asked, when it was not the settings page."""
     if action not in JOB_ACTIONS:
         raise ValueError("unknown action")
     args = list(packages or []) if action == "sysupdate" else [CORE]
+    env = {k: v for k, v in os.environ.items() if k != "BISCUIT_PKGJOB_ORIGIN"}
+    if origin:
+        env["BISCUIT_PKGJOB_ORIGIN"] = origin
     subprocess.Popen(["setsid", PKG_JOB, action] + args,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True)
+                     stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+
+
+# ---------------------------------------------------------------------------
+# The update entity in Home Assistant
+# ---------------------------------------------------------------------------
+#
+# biscuit-va-leds shows these on the voice assistant's device, so Home Assistant
+# lists the Echo under its own Updates, with its usual notification badge and
+# Install button. It covers what the settings page's Update button covers: this
+# Echo's own release, built and signed together. System packages stay on the
+# settings page: edge moves daily, and "update available" every day would teach
+# people to ignore the one that matters. They also ask for the password there,
+# and Home Assistant's connection has none.
+
+HA_UPDATE_ID = "software_update"
+# Home Assistant can ask an entity to refresh whenever an automation or a
+# dashboard button likes, and a check is a minute of apk on this CPU.
+HA_CHECK_MIN_GAP = 300
+# Two presses arriving before the job has written its status would start it twice.
+HA_START_SETTLE = 15.0
+_ha_started_at = [-HA_START_SETTLE]
+
+
+def _job_record():
+    """The package job's status file, as a dict: {} when there is none."""
+    out = {}
+    for line in _read_text(os.path.join(PKG_RUNDIR, "status")).splitlines():
+        key, _, value = line.partition("=")
+        out[key] = value
+    return out
+
+
+def ha_update_state():
+    """The update entity's state. Home Assistant shows an update when latest is
+    newer than current, or differs from it in a way it cannot compare."""
+    mine = ours()
+    last = _kv(UPDATES_FILE)
+    avail, target = _available(mine, last)
+    core = mine.get(CORE, "")
+    current = display_version(core)
+    latest, url, notes = current, source_links(core)["release"], ""
+    if target:
+        name = _target_name(last) if target == avail.get(CORE) else ""
+        latest, url = display_version(target, name), source_links(target, name)["release"]
+        notes = release_notes(name)
+    elif avail.get(KERNEL):
+        # A kernel with no new release of ours: rare, and it still has to count
+        # as an update.
+        latest = "%s kernel %s" % (current, release_tag(avail[KERNEL]) or avail[KERNEL])
+    job = _job_record()
+    # Shown as this update's release notes.
+    summary = ("Installs in the background, then the Echo restarts by itself and is "
+               "back in about a minute and a half.")
+    if job.get("action") == "update" and job.get("state") == "failed":
+        summary = "The last attempt failed: " + job.get("message", "")
+    return {"object_id": HA_UPDATE_ID, "title": "Echo software",
+            "current_version": current, "latest_version": latest,
+            "in_progress": job.get("action") == "update" and job.get("state") == "running",
+            "release_url": url, "release_summary": summary + ("\n\n" + notes if notes else "")}
+
+
+def ha_update_command(command, now=None):
+    """Home Assistant's Install ("install") or refresh ("check"). Returns the job
+    started, or "" when there was nothing to do. Nothing else may be running: the
+    job's status is the lock, as it is for the settings page."""
+    now = time.monotonic() if now is None else now
+    if command not in ("install", "check") or now - _ha_started_at[0] < HA_START_SETTLE:
+        return ""
+    if _job_record().get("state") == "running":
+        return ""
+    last = _kv(UPDATES_FILE)
+    if command == "install":
+        if not _available(ours(), last)[0]:
+            return ""
+        action = "update"
+    else:
+        checked = (last or {}).get("checked", "")
+        if checked.isdigit() and 0 <= time.time() - int(checked) < HA_CHECK_MIN_GAP:
+            return ""
+        action = "check"
+    _ha_started_at[0] = now
+    start_job(action, origin="ha")
+    return action
 
 
 # ---------------------------------------------------------------------------

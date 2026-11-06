@@ -69,6 +69,7 @@ import subprocess
 import threading
 import time
 import biscuit_services as services
+import biscuit_system as pkg_system
 import sys
 
 CONTROL_FIFO = "/run/biscuit-ring/control"
@@ -3382,6 +3383,15 @@ class Ring:
         if name == "light_command":
             self.light_command(data or {})
             return
+        if name == "update_command":
+            # Only ever the Echo's own release: see ha_update_command. Queued,
+            # because starting the job reads files and forks.
+            command = (data or {}).get("command")
+            if (data or {}).get("object_id") == pkg_system.HA_UPDATE_ID:
+                self.jobs.submit(lambda: _LOGGER.info(
+                    "update %s from Home Assistant: %s", command,
+                    pkg_system.ha_update_command(command) or "nothing to do"))
+            return
         if name == "switch_command":
             d = data or {}
             # Whatever happens below, HA is then told what was actually stored.
@@ -4201,6 +4211,27 @@ class EntitySync:
         return out
 
 
+UPDATE_REGISTRATION = {"command": "register_update", "data": {
+    "object_id": pkg_system.HA_UPDATE_ID, "name": "Software", "device_class": "firmware",
+    "entity_category": "config"}}
+UPDATE_POLL_SECONDS = 5
+
+
+async def watch_update(ws, sent):
+    """Tell Home Assistant when an update is found, installs or fails. A few
+    small file reads, and only a change is sent."""
+    while True:
+        await asyncio.sleep(UPDATE_POLL_SECONDS)
+        try:
+            now = await asyncio.to_thread(pkg_system.ha_update_state)
+        except (OSError, ValueError) as err:
+            _LOGGER.debug("could not read the update state: %s", err)
+            continue
+        if now != sent:
+            await ws.send(json.dumps({"command": "update_state", "data": now}))
+            sent = now
+
+
 async def watch_settings(ws, state):
     """Home Assistant follows every file behind its entities, within ~1 s.
 
@@ -4291,6 +4322,9 @@ async def run():
                 if headphones is not None:
                     await ws.send(json.dumps({"command": "binary_sensor_state", "data": {
                         "object_id": "headphones", "value": headphones}}))
+                update_state = await asyncio.to_thread(pkg_system.ha_update_state)
+                await ws.send(json.dumps(UPDATE_REGISTRATION))
+                await ws.send(json.dumps({"command": "update_state", "data": update_state}))
                 await ws.send(json.dumps({"command": "registrations_done"}))
                 state.sync.reset(registrations,
                                  headphones=_UNSENT if headphones is None else headphones,
@@ -4315,6 +4349,7 @@ async def run():
                     asyncio.create_task(watch_wake_direction(state)),
                     asyncio.create_task(watch_mic_profile(ws)),
                     asyncio.create_task(watch_settings(ws, state)),
+                    asyncio.create_task(watch_update(ws, update_state)),
                 ]
                 # Re-assert the ring ceiling on connect. Without this, an agent
                 # that restarts with auto dim OFF leaves no override file, so

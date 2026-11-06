@@ -40,6 +40,9 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     SubscribeHomeAssistantStatesRequest,
     SwitchCommandRequest,
     SwitchStateResponse,
+    ListEntitiesUpdateResponse,
+    UpdateCommandRequest,
+    UpdateStateResponse,
 )
 from aioesphomeapi.model import (
     ColorMode,
@@ -49,6 +52,7 @@ from aioesphomeapi.model import (
     MediaPlayerState,
     NumberMode,
     SensorStateClass,
+    UpdateCommand,
 )
 from google.protobuf import message
 
@@ -1073,6 +1077,73 @@ class PeripheralBinarySensorEntity(ESPHomeEntity):
         )
 
 
+class PeripheralUpdateEntity(ESPHomeEntity):
+    """An update a peripheral publishes. BISCUIT addition.
+
+    What Home Assistant lists under Settings > Updates, with its notification
+    badge and Install button. Unknown until the peripheral says otherwise, as for
+    the sensors. Install and refresh go back to the peripheral as an event: the
+    assistant itself cannot and should not install anything.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        on_command: Callable[[str], None],
+        device_class: str = "",
+        icon: str = "",
+        meta: Optional[dict] = None,
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self.device_class = device_class
+        self.icon = icon
+        self.meta = dict(meta or {})
+        self.on_command = on_command
+        self._state: Optional[dict] = None
+
+    def update_state(self, value: Optional[dict]) -> None:
+        self._state = dict(value) if value else None
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, UpdateCommandRequest) and msg.key == self.key:
+            if msg.command == UpdateCommand.INSTALL:
+                self.on_command("install")
+            elif msg.command == UpdateCommand.CHECK:
+                self.on_command("check")
+        elif isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesUpdateResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                device_class=self.device_class,
+                icon=self.icon,
+                entity_category=_category(self.meta, EntityCategory.CONFIG),
+                disabled_by_default=self.meta.get("disabled_by_default", False),
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            if self._state is not None:
+                yield self._get_state_message()
+
+    def _get_state_message(self) -> UpdateStateResponse:
+        state = self._state or {}
+        return UpdateStateResponse(
+            key=self.key,
+            missing_state=self._state is None,
+            in_progress=bool(state.get("in_progress")),
+            current_version=str(state.get("current_version", "")),
+            latest_version=str(state.get("latest_version", "")),
+            title=str(state.get("title", "")),
+            release_summary=str(state.get("release_summary", "")),
+            release_url=str(state.get("release_url", "")),
+        )
+
+
 class ButtonEventSensorEntity(ESPHomeEntity):
     def __init__(
         self,
@@ -1123,6 +1194,7 @@ __all__ = [
     "ESPHomeEntity",
     "PeripheralSensorEntity",
     "PeripheralBinarySensorEntity",
+    "PeripheralUpdateEntity",
     "MediaPlayerEntity",
     "MuteSwitchEntity",
     "ThinkingSoundEntity",

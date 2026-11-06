@@ -3,14 +3,43 @@
 Public releases are named `vX.Y` (`v1.0`, then `v1.0.1` for fixes and `v1.1`
 for features). Each is also tagged with its build number, `rNNN`, the `pkgrel`
 of the core package `device-amazon-biscuit`, which keeps counting underneath
-because apk orders upgrades by it. The settings page shows the release name as
-Device software, with the build beside it. The kernel package,
-`linux-amazon-biscuit`, has its own `pkgrel`, and the three TWRP tool zips have
-their own version, printed first when they run.
+because apk orders upgrades by it. The settings page and Home Assistant show the
+release name alone, `v1.4`, as Version; the build is under Updates › Details. The
+kernel package, `linux-amazon-biscuit`, has its own `pkgrel`, and the three TWRP
+tool zips have their own version, printed first when they run.
 
 Releases of the jonasradke fork end in `-jr` and continue the build numbers
 from r299; they are built by GitHub Actions and served from the fork's own
 feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
+
+## v1.5-jr (build r309)
+
+Home Assistant can tell you about updates and install them, the Updates page is
+simpler, and a version is just `v1.5` everywhere.
+
+### Updating
+
+On the settings page, open **Updates** and press **Update**, then **Restart**
+the Echo when it says "Restart to finish". From then on, updates also appear in
+Home Assistant, as long as the voice assistant is installed.
+
+### Changes
+
+- **Update from Home Assistant.** With the voice assistant installed, the Echo has
+  an update entity, so it appears under Home Assistant's Updates, with its
+  notification badge and an Install button. Installing from there restarts the
+  Echo when the update has fully succeeded. It covers the Echo's own release;
+  system packages stay on the settings page.
+- **What's new, before you update.** The release's changes are shown in Home
+  Assistant's update dialog and on the Updates page, rather than behind a link.
+- **Every page says when an update waits.** A line under the header links to
+  Updates, and to a restart when one is owed.
+- **One version number.** A version is `v1.5` everywhere, on the settings page and
+  in Home Assistant, and an update is named by its release before it is installed.
+  The Updates page is one list; the build, kernel and boot image are under Details,
+  which opens by itself when something there needs a decision.
+- **Checking for updates no longer sticks.** A page that had just redrawn could miss
+  the end of a job, and stayed on "Comparing the installed versions" until reloaded.
 
 ## v1.4-jr (build r308)
 

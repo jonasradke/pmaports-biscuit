@@ -59,16 +59,27 @@ _SOUNDS_DIR = _REPO_DIR / "sounds"
 # BISCUIT: the device build Home Assistant shows as the firmware version.
 _APK_DB = Path("/lib/apk/db/installed")
 _DEVICE_PACKAGE = "device-amazon-biscuit"
+_RELEASE_FILE = Path("/usr/share/biscuit/release")
 
 
-def device_build(db: Path = _APK_DB, package: str = _DEVICE_PACKAGE) -> Optional[str]:
-    """The installed device package's release, as "r293", or None.
+def device_build(db: Path = _APK_DB, package: str = _DEVICE_PACKAGE,
+                 release: Path = _RELEASE_FILE) -> Optional[str]:
+    """The version Home Assistant shows, as the settings page names it: the
+    public release ("v1.4"), or the device package's build ("r293") where there
+    is none, or None.
 
     From the apk database rather than `apk info`: this runs once at start and a
     fork of apk costs more than reading the file. The release is what every
     note, changelog and settings page on this device calls a build; the pkgver
     in front of it has not moved in months.
     """
+    try:
+        for line in release.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.strip().partition("=")
+            if key == "release" and value:
+                return value.split("-", 1)[0]
+    except OSError:
+        pass
     try:
         with open(db, "r", encoding="utf-8", errors="replace") as handle:
             ours = False

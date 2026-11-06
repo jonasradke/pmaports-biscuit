@@ -2297,9 +2297,10 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         # Every answer names the public release this Echo runs, so the page
         # can call its build "v1.0" wherever it shows it, whichever endpoint
-        # it came from. One small file read.
+        # it came from, and says whether an update waits, for the line every
+        # page shows. A few small file reads.
         if code == 200 and isinstance(obj, dict) and "_release" not in obj:
-            obj = dict(obj, _release=system.release())
+            obj = dict(obj, _release=system.release(), _update=system.update_notice())
         self._send(code, json.dumps(obj))
 
     def _client(self):
@@ -3943,6 +3944,14 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
 .row.flash, summary.flash, .group > h2.flash { animation:flash 2.6s ease-out; }
 @keyframes flash { 0%, 45% { background:color-mix(in srgb, var(--accent) 24%, transparent); }
                    100% { background:transparent; } }
+.notes { padding:0 1rem; line-height:1.5; }
+.notes h3 { margin:1rem 0 .4rem; font-size:1rem; }
+.notes ul { margin:.4rem 0; padding-left:1.25rem; }
+.notes li { margin:.4rem 0; }
+#updbar { display:block; padding:.6rem 1rem; text-align:center; text-decoration:none; font-size:.9rem;
+          color:var(--accent); background:color-mix(in srgb, var(--accent) 14%, transparent); }
+#updbar.warn { color:var(--warn, #c60); background:color-mix(in srgb, var(--warn, #c60) 14%, transparent); }
+#updbar[hidden] { display:none; }
 @media (prefers-reduced-motion:reduce) {
   .row.flash, summary.flash, .group > h2.flash { animation:none;
     background:color-mix(in srgb, var(--accent) 16%, transparent); }
@@ -3954,6 +3963,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible,
   <h1 id="title" tabindex="-1">Settings</h1>
   <div class="right" id="hdracts"></div>
 </header>
+<a id="updbar" href="#/updates" hidden></a>
 <main id="view"><div class="skeleton">Loading…</div></main>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="scrim" hidden></div>
@@ -4059,6 +4069,19 @@ async function seal(obj) {
                    b64(nacl.box(msg, nonce, u8(k.key), eph.secretKey)) };
 }
 
+/* The line under the header on every page but the two that say it themselves. */
+function showUpdateBar() {
+  const bar = $("updbar");
+  const route = location.hash.replace(/^#\/?/, "");
+  const text = NOTICE.damaged ? "A boot partition may be damaged: do not restart"
+    : NOTICE.restart ? "Restart to finish updating"
+    : NOTICE.target ? "Update available: " + rel(NOTICE.target)
+    : NOTICE.kernel ? "Kernel update available" : "";
+  bar.textContent = text;
+  bar.classList.toggle("warn", !!NOTICE.damaged);
+  bar.hidden = !text || route === "" || route === "updates";
+}
+
 async function api(path, body, how) {
   if (body && how && how.seal) body = await seal(body);
   const opts = body
@@ -4071,6 +4094,7 @@ async function api(path, body, how) {
   try { data = await r.json(); } catch (e) { /* a 500 with no body */ }
   if (!r.ok) throw new Error(data.error || ("Request failed (" + r.status + ")"));
   if (data && data._release) RELEASE = data._release;
+  if (data && data._update) { NOTICE = data._update; showUpdateBar(); }
   return data;
 }
 
@@ -4648,11 +4672,15 @@ function ago(epoch, now) {
    before v1.0. */
 let RELEASE = { name: "", build: "" };
 
-/* How a build is named everywhere a person sees it: the build this Echo runs
-   by its release ("6-r295" -> "v1.0"), any other by its number ("6-r296" ->
-   "r296") - an update's release name is not known until it is installed. */
+/* The update every page mentions, as every API answer carries it. */
+let NOTICE = {};
+
+/* How a build is named everywhere a person sees it: by its release, without the
+   fork's suffix ("6-r295" -> "v1.0"), whether it is the one this Echo runs or the
+   one the feed offers; otherwise by its number ("6-r296" -> "r296"). */
 const rel = (v) => {
-  if (v && RELEASE.name && v === RELEASE.build) return RELEASE.name;
+  if (v && RELEASE.name && v === RELEASE.build) return RELEASE.name.replace(/-[a-z]+$/, "");
+  if (v && NOTICE.name && v === NOTICE.target) return NOTICE.name;
   const m = /-r(\d+)$/.exec(v || ""); return m ? "r" + m[1] : (v || "");
 };
 
@@ -4791,8 +4819,12 @@ let PAGE_TIMERS = [];    // a page's own polls, all cleared whenever the route c
  * and only when the signature actually differs - so an idle page is quiet and a
  * page being used is left alone.
  */
-function pollPage(fetcher, signature, everyMs) {
-  let last = null;
+function pollPage(fetcher, signature, everyMs, rendered) {
+  // What the page was drawn from, when the caller passes it. Without it the
+  // first poll only takes a reading to compare the next one with - and whatever
+  // changed in between is never drawn: a job that ended in those seconds left
+  // the page on its last step, "Comparing the installed versions", for good.
+  let last = rendered === undefined ? null : signature(rendered);
   // The route this poll belongs to. render() clears PAGE_TIMER before awaiting
   // the next page, but a slow page that loses the navigation race still gets to
   // run its pollPage afterwards - so the interval also checks for itself, and
@@ -6831,7 +6863,7 @@ PAGES["apps"] = async function () {
     pollPage(() => api("/api/apps"), (d) => JSON.stringify([
       d.busy, d.running && [d.running.action, d.running.message], d.job && d.job.id,
       d.pending && [d.pending.state, d.pending.waiting, d.pending.packages, Math.round((d.pending.retry_in || 0) / 300)]]),
-      busy ? 3000 : 15000);
+      busy ? 3000 : 15000, apps);
   }
 
   const counts = {
@@ -7909,8 +7941,7 @@ PAGES["about"] = async function () {
   blocks.push(group("Device", boxed([
     row({ title: "Model", value: s.model }),
     row({ title: "Operating system", value: s.os }),
-    row({ title: "Device software", value: rel(s.version), sub: '<span class="mono">' + esc(s.device_pkg) + "</span>" }),
-    row({ title: "Kernel", value: s.kernel, sub: '<span class="mono">' + esc(s.kernel_pkg) + "</span>" }),
+    row({ title: "Version", value: rel(s.version), go: "#/updates" }),
     row({ title: "Wi-Fi address", value: (s.wifi || {}).mac || "—" }),
     row({ title: "Up for", value: duration(s.uptime) }),
   ])));
@@ -7955,6 +7986,22 @@ function progressHtml(p) {
          (p.unit === "source" ? "Source " : "Step ") + p.done + " of " + p.total + ": " + esc(p.text);
 }
 
+/* A release's notes, from the changelog: its headings, lists and bold, with
+   everything else escaped. They come from the web, so nothing in them is markup. */
+function notesHtml(text) {
+  const inline = (s) => esc(s).replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  return text.split(/\n\s*\n/).map((block) => {
+    const b = block.trim();
+    if (!b) return "";
+    if (/^#+ /.test(b)) return "<h3>" + inline(b.replace(/^#+ /, "")) + "</h3>";
+    if (b.startsWith("- ")) {
+      return "<ul>" + b.split(/\n- /).map((i) => "<li>" + inline(i.replace(/^- /, "")) + "</li>").join("") + "</ul>";
+    }
+    return "<p>" + inline(b) + "</p>";
+  }).join("");
+}
+
 PAGES["updates"] = async function () {
   const u = await api("/api/updates");
   const job = u.job;
@@ -7971,7 +8018,7 @@ PAGES["updates"] = async function () {
                            d.kernel_available, d.reboot_required, (d.system || []).length, d.auto_check,
                            d.boot && [d.boot.differs, d.boot.checked_at, d.boot.rolled_back,
                                       d.boot.rollback && d.boot.rollback.available]]),
-    busy ? 2500 : 10000);
+    busy ? 2500 : 10000, u);
 
   const start = async (body, title, text) => {
     if (title && !await confirmDialog(title, text, "Update")) return;
@@ -8047,29 +8094,42 @@ PAGES["updates"] = async function () {
   // feed did, so the device software is known; the system list may be short.
   const partial = u.check_ok && u.check_why === "partial"
     ? " Some package servers could not be reached, so this list may be incomplete." : "";
-  const ours = [row({ icon: "info", title: "Installed", value: rel(u.version),
-                      sub: "The device software and its apps, which update together." })];
+  // One list, in the words the home page and Home Assistant use: which version
+  // this is, whether there is a newer one, and what to press. The kernel and the
+  // boot image have numbers of their own, which only matter when something has
+  // gone wrong, so they wait under Details.
+  const checkNow = () => btn("Check now", { cls: "small", disabled: busy,
+    onclick: () => start({ action: "check" }) });
+  const sys = u.system || [];
   const updateRow = (title) => row({ icon: "download", title, badge: "New", badgeKind: "accent",
+    sub: "Installs in the background; everything keeps working. Restart when it finishes.",
     end: btn("Update", { cls: "small suggested", disabled: busy, onclick: () => start({ action: "update" },
       title.replace(/^.*available: /, "Update to ") + "?",
       "It installs in the background; everything keeps working. Restart when it finishes.") }) });
+  const software = [row({ icon: "info", title: "Version", value: rel(u.version) })];
   if (u.target) {
-    ours.push(updateRow("Update available: " + rel(u.target)));
-    if (u.target_links && u.target_links.release) ours.push(linkRow({ icon: "note", title: "What's new in " + rel(u.target), href: u.target_links.release }));
+    software.push(updateRow("Update available: " + rel(u.target)));
+    if (!u.target_notes && u.target_links && u.target_links.release) software.push(linkRow({ icon: "note", title: "What's new in " + rel(u.target), href: u.target_links.release }));
   } else if (u.kernel_available) {
-    ours.push(updateRow("Kernel update available: " + u.kernel_available));
+    software.push(updateRow("Kernel update available"));
   } else if (u.checked_at && u.check_ok) {
-    ours.push(row({ icon: "check", title: "Up to date", sub: "Checked " + ago(u.checked_at, u.now) + "." }));
+    software.push(row({ icon: "check", title: "Up to date", sub: "Checked " + ago(u.checked_at, u.now) + ".", end: checkNow() }));
   } else if (u.checked_at) {
-    ours.push(row({ icon: "info", title: "Could not check", sub: couldNot }));
+    software.push(row({ icon: "info", title: "Could not check", sub: couldNot, end: checkNow() }));
   } else {
-    ours.push(row({ icon: "info", title: "Not checked yet",
+    software.push(row({ icon: "info", title: "Not checked yet",
       sub: u.auto_check ? "It checks once a day, starting a few minutes after the Echo starts."
-                        : "This device checks only when you ask." }));
+                        : "This device checks only when you ask.", end: checkNow() }));
   }
-  ours.push(row({ title: "Check for updates", end: btn("Check now", { cls: "small", disabled: busy,
-    onclick: () => start({ action: "check" }) }) }));
-  ours.push(row({ title: "Check automatically",
+  if (sys.length) {
+    software.push(row({ icon: "download", title: sys.length + " system update" + (sys.length === 1 ? "" : "s") + " available",
+      sub: "postmarketOS's own packages." + partial,
+      end: btn("Update all", { cls: "small", disabled: busy, onclick: () => guarded({ action: "sysupdate" },
+        "Update " + sys.length + " system packages?",
+        "Installs the newer postmarketOS packages. What the apps were built against is kept, so they keep " +
+        "working. Takes a few minutes; restart when it finishes.", "Update") }) }));
+  }
+  software.push(row({ title: "Check automatically",
     sub: "Once a day. Updates are only ever installed when you ask.",
     end: switchEl(!!u.auto_check, async (on, input) => {
       input.disabled = true;
@@ -8077,14 +8137,27 @@ PAGES["updates"] = async function () {
       catch (e) { toast(e.message, true); }
       reload();
     }) }));
-  if (!u.target && u.links && u.links.release) ours.push(linkRow({ icon: "note", title: "Release notes for " + rel(u.version), href: u.links.release }));
-  blocks.push(group("Device software", boxed(ours)));
+  if (!u.target && u.links && u.links.release) software.push(linkRow({ icon: "note", title: "Release notes for " + rel(u.version), href: u.links.release }));
+  blocks.push(group("", boxed(software),
+    "With the voice assistant installed, Home Assistant lists this Echo under its own Updates too, and can install " +
+    "the same update. It then restarts the Echo by itself."));
+  if (u.target && u.target_notes) {
+    blocks.push(fold("What's new in " + rel(u.target), el('<div class="notes">' + notesHtml(u.target_notes) + "</div>"), "", true));
+  }
+  if (sys.length) {
+    blocks.push(fold("System updates · " + sys.length, [group("", boxed(sys.map(([n, from, to]) => row({
+      title: n, sub: esc(from) + " → " + esc(to), go: "#/app/" + encodeURIComponent(n) }))))],
+      "The apps carry environments built for one Python version and particular libraries. An update keeps " +
+      "those: it installs a compatible copy next to a newer library, or leaves that one package out, and " +
+      "updates the rest."));
+  }
 
   // The kernel and initramfs start from the boot partitions, which no
   // package writes. A kernel update is installed to /boot, and used once the
-  // boot image built from it is installed here.
-  const bootRows = [row({ icon: "info", title: "Kernel", value: u.running_kernel || "—",
-    sub: u.kernel ? '<span class="mono">linux-amazon-biscuit-' + esc(u.kernel) + "</span>" : "" })];
+  // boot image built from it is installed here. Opened by itself when something
+  // here needs a decision.
+  const bootRows = [row({ title: "Build", value: u.links && u.links.tag || "—" }),
+    row({ title: "Kernel", value: u.running_kernel || "—" })];
   if (!boot || boot.ok === null) {
     bootRows.push(row({ icon: "info", title: "Boot image not checked yet",
       sub: "It is compared with the installed kernel whenever updates are checked." }));
@@ -8134,33 +8207,8 @@ PAGES["updates"] = async function () {
         "Put back the previous boot image?",
         "The image from before the last install is written to both boot slots. Restart afterwards." + warn, "Put back") }) }));
   }
-  blocks.push(group("Kernel and boot image", boxed(bootRows)));
-
-  const sys = u.system || [];
-  const sysRows = [];
-  if (sys.length) {
-    sysRows.push(row({ icon: "download", title: sys.length + " system update" + (sys.length === 1 ? "" : "s") + " available",
-      sub: "postmarketOS's own packages, from its edge channel." + partial,
-      end: btn("Update all", { cls: "small suggested", disabled: busy, onclick: () => guarded({ action: "sysupdate" },
-        "Update " + sys.length + " system packages?",
-        "Installs the newer postmarketOS packages. What the apps were built against is kept, so they keep " +
-        "working. Takes a few minutes; restart when it finishes.", "Update") }) }));
-  } else if (u.checked_at && !u.check_ok) {
-    // Nothing could be checked: not "up to date".
-    sysRows.push(row({ icon: "info", title: "Could not check", sub: couldNot }));
-  } else {
-    sysRows.push(row({ icon: "check",
-      title: !u.checked_at ? "Not checked yet" : partial ? "No system updates found" : "System packages are up to date",
-      sub: u.checked_at ? "Checked " + ago(u.checked_at, u.now) + "." + partial : "Check for updates above." }));
-  }
-  blocks.push(group("System packages", boxed(sysRows),
-    "The apps carry environments built for one Python version and particular libraries. An update keeps " +
-    "those: it installs a compatible copy next to a newer library, or leaves that one package out, and " +
-    "updates the rest."));
-  if (sys.length) {
-    blocks.push(fold("Available · " + sys.length, [group("", boxed(sys.map(([n, from, to]) => row({
-      title: n, sub: esc(from) + " → " + esc(to), go: "#/app/" + encodeURIComponent(n) }))))]));
-  }
+  const needsDecision = damaged || rolledBack || bootNew || !!(boot && boot.ok === false && !boot.unsupported);
+  blocks.push(fold("Details", [group("", boxed(bootRows))], "", needsDecision));
   return { title: "Updates", body: blocks };
 };
 </script>
