@@ -81,6 +81,17 @@ from .util import call_all
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _settings_port() -> int:
+    """BISCUIT: the settings page's port, as biscuit_system reads it."""
+    try:
+        with open("/opt/persist/settings-port", encoding="ascii") as handle:
+            port = int(handle.read().strip())
+    except (OSError, ValueError):
+        return 8080
+    return port if 0 < port < 65536 else 8080
+
+
 PROTO_TO_MESSAGE_TYPE = {v: k for k, v in MESSAGE_TYPE_TO_PROTO.items()}
 
 # BISCUIT: what Home Assistant shows on the device page. HA takes manufacturer
@@ -1007,6 +1018,8 @@ class VoiceSatelliteProtocol(APIServer):
                 manufacturer=DEVICE_MANUFACTURER,
                 model=DEVICE_MODEL,
                 voice_assistant_feature_flags=self.supported_features,
+                # BISCUIT: puts "Visit" on the device page in Home Assistant.
+                webserver_port=_settings_port(),
             )
         elif isinstance(msg, SubscribeVoiceAssistantRequest):
             if msg.subscribe:

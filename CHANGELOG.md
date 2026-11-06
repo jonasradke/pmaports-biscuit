@@ -12,6 +12,40 @@ Releases of the jonasradke fork end in `-jr` and continue the build numbers
 from r299; they are built by GitHub Actions and served from the fork's own
 feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
 
+## v1.4-jr (build r308)
+
+The 3.5 mm jack works after a restart, Home Assistant finds the Bluetooth proxy,
+and its device page links to the Echo's settings.
+
+### Updating
+
+On the settings page, open **Updates** and press **Update**, then **Restart**
+the Echo when it says "Restart to finish". Nothing else is needed. With the
+Bluetooth proxy switched on, Home Assistant offers it as a new ESPHome device.
+
+### Changes
+
+- **The jack plays after a restart.** An Echo started with a speaker or
+  headphones plugged in played nothing, on either output, until the plug was
+  pulled and put back. Only the speaker path connected the audio to the codec,
+  and starting with the jack in never selects it.
+- **Home Assistant finds the Bluetooth proxy.** Its mDNS record had no MAC
+  address, so Home Assistant ignored it, and the version it reported made the
+  connection fail with an error. It now also waits for the Bluetooth adapter
+  and for Wi-Fi at boot, so it always has the same identity and listens on the
+  Wi-Fi address only. It is advertised only while it is switched on. A proxy
+  added by hand under its Wi-Fi-derived address has to be added again.
+- **A Visit link in Home Assistant.** The Echo's device page, and the proxy's,
+  now open the settings page, on whichever port it is set to.
+
+### Packages
+
+| | Version |
+|---|---|
+| `device-amazon-biscuit` and subpackages | 6-r308 |
+| `bluez-alsa` | 5.0.0-r1 (unchanged) |
+| `linux-amazon-biscuit` | 7.0.0_rc6-r243 (unchanged) |
+
 ## v1.3-jr (build r307)
 
 System updates can no longer break the voice assistant or the Music Assistant

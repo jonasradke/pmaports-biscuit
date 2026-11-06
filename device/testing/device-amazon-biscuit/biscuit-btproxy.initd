@@ -46,16 +46,11 @@ start_pre() {
 		EOF
 	fi
 
-	# Keep the mDNS advertisement's port in step with the configured one.
-	# Shipping a fixed 6054 in the avahi file while the config can change the
-	# port is exactly the kind of quiet divergence that ends with "Home
-	# Assistant discovered it but cannot connect".
-	_port=$(sed -n 's/^BTPROXY_PORT=//p' /opt/persist/btproxy.env 2>/dev/null | tr -dc '0-9')
-	: "${_port:=6054}"
-	_svc=/etc/avahi/services/biscuit-btproxy.service
-	if [ -f "$_svc" ] && ! grep -q "<port>${_port}</port>" "$_svc"; then
-		sed -i "s|<port>[0-9]*</port>|<port>${_port}</port>|" "$_svc"
-		einfo "mDNS advertisement updated to port ${_port}"
-	fi
+	return 0
+}
+
+stop_post() {
+	# The service advertises itself while it runs; see publish_mdns.
+	rm -f /etc/avahi/services/biscuit-btproxy.service
 	return 0
 }

@@ -3,7 +3,7 @@ maintainer="jonasradke <me@jonasradke.com>"
 pkgname=device-amazon-biscuit
 pkgdesc="Amazon Echo Dot (2nd gen)"
 pkgver=6
-pkgrel=307
+pkgrel=308
 # The public release this build is: the name on the release page, the install
 # zip and the settings page. pkgrel is the build and keeps counting, because
 # apk orders upgrades by it and a release name like 1.0 would sort below the
@@ -12,7 +12,7 @@ pkgrel=307
 # given to another build (installer/zip/releases.json).
 # Releases of the jonasradke fork carry a "-jr" suffix, so they can never be
 # mistaken for, or collide with, an upstream release of the same number.
-_release="v1.3-jr"
+_release="v1.4-jr"
 url="https://github.com/jonasradke/pmaports-biscuit"
 # Core is our own code (MIT) plus two vendored pieces that keep their own
 # licences: TweetNaCl-js (public domain, Unlicense) for the setup and settings
@@ -195,7 +195,6 @@ source="
 	biscuit-btproxy-bluez.py
 	biscuit-btproxy-active.py
 	biscuit-btproxy.initd
-	biscuit-btproxy.avahi.service
 	btproxy/api_pb2.py
 	btproxy/api_options_pb2.py
 	btproxy/__init__.py
@@ -586,8 +585,8 @@ package() {
 	install -Dm644 "$srcdir"/__init__.py 		"$pkgdir"/usr/lib/biscuit-btproxy/aioesphomeapi_min/__init__.py
 	install -Dm755 "$srcdir"/biscuit-btproxy.initd "$pkgdir"/etc/init.d/biscuit-btproxy
 	ln -sf /etc/init.d/biscuit-btproxy "$pkgdir"/etc/runlevels/default/biscuit-btproxy
-	# Advertised over mDNS so Home Assistant offers it instead of needing an IP.
-	install -Dm644 "$srcdir"/biscuit-btproxy.avahi.service 		"$pkgdir"/etc/avahi/services/biscuit-btproxy.service
+	# The service writes its own avahi file while it is on: the mDNS record has
+	# to carry this device's address, or Home Assistant ignores it.
 
 	# Timekeeping. chrony is installed and enabled already, but away from a
 	# network that permits NTP it has no source at all - it never syncs, so
@@ -1499,7 +1498,7 @@ ab43627d475b8a28caf768e37facb44990300e6a0cee2fca045e4c3f9e64a63308eb0593e60acb16
 aa74426dfd73c8ccb807b3b996f1766f97d7e1a0025260bd1f5bd7ad0c2ec3f4786d8dc721bcb3678d74e46231d6fc140fe07f244290ce2c99b8c35746b35649  asound.conf
 acc93ffeaa7dc8e57af7432dba2aee5ec339166064d898d0db1c1d8f0ad887fb6ab986168d145b739cabd04e15f59484ec037487511cc1f0a0e31ab94e6189f7  pulse-daemon-biscuit.conf
 d66d6f2129f8aef4449137a1506fb3b3a1275c98502238537ac4dd0c174145706bac971e7e100d3599c9b8aa9c62319c302884d39aad5ba99c9bdcbe1e54bc23  pulse-default-biscuit.pa
-ba4a172f986f2fca7e7d3a24b944e6772e4d2e1e12f59d881c52aba1f9d79624aae9a8f8bd3322ec5ef019c0b53b43e52516d25caa852fa89daad73bc714e592  HiFi.conf
+bfb34aaaf686d0bbdf58bbc99a3e873dbb0d83a732d1cfbe16ce8a10f1be5bf53db6a275ee5c18a1c140d45aeddb64f11cf229ec8c3f8d136f46a6b69a4d494d  HiFi.conf
 1e61dc5b3fb05fd4c83164851617d3da5901f0c29f55478f4559e95b58ab5349dbad3da87ac75797177d8fc3bd943b0e08ddf595421a08e1bdf497afadbe7140  mt8163_biscuit.conf
 4aa69856b032985ad0da7a0a845ef82d144a7a7e309c2d6ec7f9282aedb991962743a3db42a1a6faedf118baf6338e69acf8614757b65381cf1a341d6b494cd2  wifi.start
 429a9aca6077ca11e49cad71b7ce59a9dcee64b06a40b67b82f3e6e039d5e36fea2141950eee145a4685086c3ef93055dc7b42a159cc8cbc77ae698ebd649b46  zz-boot-done.start
@@ -1525,11 +1524,10 @@ cba0584c984700c8be668c7c8e42cb492195e3baad1779a1087cac9c2aa0d79880ac8bb2155dc876
 edebbb19ef930151442934957ba70a8c2bab8310843d63a3ef8cb2d93da23bddb37809a1c88d95302f7eb238a9b3b67d4473d4c413a4123694d7cca419dc644c  biscuit-settings.py
 94f48cebc2fbf393182c323accc9e6f7c56bb14e24d6136b451ec131bf8d04aedbcd95cb103a12c2530b74bd610a69873c0acc60d410ce58fd5b975766b87fe3  biscuit-netcfg.py
 7aa697a7d0ece2dfc104ccc9dc6319cb2e95682f2e330146065c39df31dcddd9161877fdaf5959db71a4f10c550b7dc9e6cf51077faf783053fe7cc005b77330  biscuit-btcast.sh
-5169baea2ff90e73f348818acef3ca8c97bfd725f7f170288768adfb26c5da721a25c7b765ea6eca37e4ab42c3ef5151b8d55bb1ed4367fad4465d097f420153  biscuit-btproxy.py
+f9e1b35d3f8413fef0ce871085f9f223e95d05873a96f116afb93f4e52a37853ee6b2cdb7e71721b78850226b2d15cde4d8f1ae7eec6763ea12fcf5fed75e5af  biscuit-btproxy.py
 b46d517a1e9ae68822df2637d31a4aafa744a6c24da747b7f1fc1886ae6e0f6a054d33bd2556389b6ac0640431fad150a45b93a873ab9b9d31cad0df8c263718  biscuit-btproxy-bluez.py
 15487942cd705b64fd33f2adb33cf7f3b1d2828be873b7bdbd42d512b2ad8de8c75e66b275b8abb5a784787415ffc2334246630bf80bc4d4adbf3ab664058861  biscuit-btproxy-active.py
-501ead875e87758469ce1e61560f79f082be1539f7ae323b01a57c9f43513386b92c2efb1d5e59d00e2b37137428cba31d7f384697199416892ab31676f8bd89  biscuit-btproxy.initd
-82e77e62a8bcc97a785e393efcf415a84b67fe8c0b829fe2971399d1afaee45a968b9d5797e028bceaf570109a84f6bd54fba08c2b078483169e0e5a86e4e99c  biscuit-btproxy.avahi.service
+2f0abd01ecaf519d0a55f296417f8b7906a0c56881273191f538908e3175a47bf63492b65e37bb6fa99b0d60f9ef6376958eb24e173689075fab4755743e4db5  biscuit-btproxy.initd
 598f3a7091857d6eeb64d185828f8ee08c1e52f3aa665a8ea90fe5adac7a53c4583e2f2a86d271ed6297a24e9b7aac95c5c69f4100da08bcd8de9c5e774200ee  api_pb2.py
 ceb146692bdddb9c3021350c77259d82788ee5ece26b22cf57d7eefed3fd3fcb602125d77b45367422d845b865a2211b4401403f0e71635dc5ce16e91ddc107b  api_options_pb2.py
 1b6238c98996ad32cd09d50fc8828de08fc8ae5dea641260904c65cd49bcc78a7097dcbf1656a40431e2bd29973f1ff12b41503cfb0756bf2865bb5ec82dd824  __init__.py
@@ -1639,7 +1637,7 @@ afa8b6f7510f2e262320228b04ea6b0f28819c51ce9aa18ba1565fd1e7263ff71e6d262349a869f8
 5d783e0264af186c609030d097590a184a5d0674f460d7dbac6fb00824d249eb4bb9546996042ccb6b53aaa26b6e7e4216f942b5e4b5f71a8d5bf2062ebd7630  peripheral_api.py
 82a81d7b14057946e7889ddd4a381faeb8f1f41078c8ad7a17ff8417a6c7a58d1c56fc1f55c6f2606fa2497f6c38b2be294d93d52c1821f9fb0855487f9b0aad  entity.py
 e6e6c898ae6557cb7902761ceabc1257f7761910a93acb4cc555d0bf6598c6285ed5c7866d9263302db14270720cbe5379be02a7852b9061d8a34003c2612eb8  __main__.py
-8a99f0d804eb1bb3b263bd0f134d7bfb6ef8b661675d1d1366752b7eac0366a1554a401d9466c4efb1676a9758dd65d43f37a42d0e217310d7d1057ff9704259  satellite.py
+b4db601e074c83bcc975e4d84ed28ffc1f996f73df5909763447202d94b2ebd2ab9eca98636fef57db3546ccd22af619fd0b29ba6803e7f991cfab9a33a08623  satellite.py
 b961e8a87e039d249446e448c925abb8cdf31ca80749c619f7a1cbeedeb891cc39e7d86cccb462046235af49e6a6b23a98ca96aa746c2d522e386fb7a31c7374  qualification_v1.py
 1e55f04109efe24b62d09da47139747956e2802d9c95b6dec5459d275b94ac8f452f26beef550dbcf577630c2d2d38eb0b153bbedbe82e96816c92ba42873ae7  peripheral_transport.py
 f80fd53f8d6f4cc136b75f459fc3b9663d84415ef1f184e5614e4e0c07cc120c512f846950cfb5608932c1741a3d0fe56dd9fc1a8134a9e53c79bb635cfe19fa  mpv_player.py

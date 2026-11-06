@@ -50,6 +50,7 @@ import subprocess
 import sys
 import threading
 import time
+from xml.sax.saxutils import escape
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -103,8 +104,25 @@ FEATURE_RAW_ADVERTISEMENTS = 1 << 5
 BT_BUSY_DIR = "/run/biscuit-bt/busy"
 BT_BUSY_OWNER = "btproxy"
 
-# Never cached as an identity - see ProxyServer.adapter_mac.
-MAC_UNKNOWN = "00:00:00:00:00:00"
+# Home Assistant's ESPHome integration uses this field to decide whether to warn
+# that the firmware is too old for Bluetooth, and it compares it as a version:
+# anything that is not version-shaped raises on connect. It is the release of
+# the ESPHome API this file follows, not a claim that ESPHome is running here.
+ESPHOME_API_RELEASE = "2026.5.1"
+
+# Where the settings pages listen, for Home Assistant's "Visit" link.
+# Same store and same default as biscuit_system.settings_port().
+SETTINGS_PORT_FILE = "/opt/persist/settings-port"
+DEFAULT_SETTINGS_PORT = 8080
+
+# How often to look for the Bluetooth adapter while it is not up yet.
+IDENTITY_RETRY_S = 5.0
+
+# How long to wait for the Wi-Fi address before listening on every interface.
+BIND_WAIT_S = 180
+BIND_RETRY_S = 2.0
+
+AVAHI_SERVICE = "/etc/avahi/services/biscuit-btproxy.service"
 
 AF_BLUETOOTH = 31
 BTPROTO_HCI = 1
@@ -117,21 +135,10 @@ LE_SUB_ADV_REPORT = 0x02
 LE_SUB_EXT_ADV_REPORT = 0x0D
 
 
-def resolve_bind(cfg):
-    """The address to listen on.
-
-    "auto" means the configured interface's own IPv4. If that cannot be read -
-    the interface is down, renaming, or has no address yet - fall back to
-    0.0.0.0 and SAY SO, because silently listening everywhere is exactly the
-    behaviour this setting exists to stop.
-    """
-    want = str(cfg.get("bind", "auto")).strip()
-    if want and want != "auto":
-        return want
-    iface = str(cfg.get("interface", "wlan0")).strip() or "wlan0"
+def interface_address(iface):
+    """The interface's IPv4 address, or None if it has none right now."""
     try:
         import fcntl
-        import struct
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             # SIOCGIFADDR
@@ -140,10 +147,51 @@ def resolve_bind(cfg):
             return socket.inet_ntoa(packed[20:24])
         finally:
             s.close()
-    except OSError as err:
-        _LOGGER.warning("cannot read %s address (%s); listening on 0.0.0.0, "
-                        "which exposes the proxy on every interface", iface, err)
-        return "0.0.0.0"
+    except OSError:
+        return None
+
+
+def resolve_bind(cfg):
+    """The address to listen on.
+
+    "auto" means the configured interface's own IPv4. At boot Wi-Fi can come up
+    after this service, so give it BIND_WAIT_S to get an address. Only if it
+    still has none, fall back to 0.0.0.0 and SAY SO, because silently listening
+    everywhere is exactly the behaviour this setting exists to stop.
+    """
+    want = str(cfg.get("bind", "auto")).strip()
+    if want and want != "auto":
+        return want
+    iface = str(cfg.get("interface", "wlan0")).strip() or "wlan0"
+    deadline = time.monotonic() + BIND_WAIT_S
+    logged = False
+    while True:
+        addr = interface_address(iface)
+        if addr:
+            return addr
+        if time.monotonic() >= deadline:
+            break
+        if not logged:
+            _LOGGER.info("waiting for an address on %s", iface)
+            logged = True
+        time.sleep(BIND_RETRY_S)
+    _LOGGER.warning("%s has no address after %d s; listening on 0.0.0.0, which "
+                    "exposes the proxy on every interface", iface, BIND_WAIT_S)
+    return "0.0.0.0"
+
+
+def settings_port():
+    """The settings page's port, as biscuit_system reads it."""
+    try:
+        with open(SETTINGS_PORT_FILE) as f:
+            port = int(f.read().strip())
+    except (OSError, ValueError):
+        return DEFAULT_SETTINGS_PORT
+    return port if 0 < port < 65536 else DEFAULT_SETTINGS_PORT
+
+
+def friendly_name():
+    return "%s Bluetooth Proxy" % socket.gethostname()
 
 
 def load_config():
@@ -515,11 +563,18 @@ class ProxyConnection(threading.Thread):
     def device_info(self):
         info = DeviceInfoResponse()
         info.name = self.cfg["name"]
-        info.friendly_name = self.cfg["name"]
-        info.mac_address = self.server.adapter_mac()
-        info.esphome_version = "biscuit-btproxy"
+        info.friendly_name = friendly_name()
+        mac = self.server.adapter_mac()
+        info.mac_address = mac
+        info.bluetooth_mac_address = mac
+        info.esphome_version = ESPHOME_API_RELEASE
+        # A project name also tells Home Assistant that firmware updates are
+        # this project's business, so it never suggests updating ESPHome.
+        info.project_name = "postmarketOS.Amazon Echo Dot (2016)"
         info.model = "Amazon Echo Dot (2016)"
         info.manufacturer = "postmarketOS"
+        # This is what puts "Visit" on the device page in Home Assistant.
+        info.webserver_port = settings_port()
         flags = FEATURE_PASSIVE_SCAN | FEATURE_RAW_ADVERTISEMENTS
         if self.cfg.get("active"):
             flags |= FEATURE_ACTIVE_CONNECTIONS
@@ -681,53 +736,45 @@ class ProxyServer:
         bt_busy_set(paused)
 
     def adapter_mac(self):
-        """A stable unique id for Home Assistant.
+        """The Bluetooth adapter's address, or None until it is up.
 
-        HA keys an ESPHome device on mac_address, so this MUST NOT be the same
-        value the voice assistant reports or the two would collide as one
-        device. The Bluetooth adapter address would be ideal and is genuinely
-        distinct, but this kernel exposes no address file under
-        /sys/class/bluetooth/hci0 - only device/power/reset/rfkill/subsystem -
-        so it has to come from bluetoothctl, which needs bluetoothd up.
+        Home Assistant keys an ESPHome device on mac_address and treats any
+        other value at the same address as a different device, refusing it
+        until the user repairs the entry. So this has to be the same answer on
+        every boot, and it has to differ from the wlan0 address the voice
+        assistant reports. That rules out a stand-in while bluetoothd is still
+        coming up, which on this device is about 40 s after boot: serve() waits
+        for the real address instead.
 
-        The fallback derives an address from wlan0 with the locally-administered
-        bit set. That is stable across reboots, cannot collide with the real
-        wlan0 MAC the assistant uses, and is exactly what that bit is for.
-
-        BOTH sources can be missing at boot. This service starts before
-        bluetoothd answers and before the CONSYS driver has created wlan0, and
-        the first run of this really did log 00:00:00:00:00:00 - which HA would
-        then have used as the device's permanent identity, colliding with any
-        other device that failed the same way. So the sentinel is never cached:
-        a caller that got it asks again, and the answer is resolved for real as
-        soon as either source appears.
+        This kernel exposes no address file under /sys/class/bluetooth/hci0,
+        hence bluetoothctl.
         """
-        if self._mac and self._mac != MAC_UNKNOWN:
-            return self._mac
-        mac = self._resolve_mac()
-        if mac != MAC_UNKNOWN:
-            self._mac = mac
-        return mac
+        if self._mac is None:
+            self._mac = self._resolve_mac()
+        return self._mac
 
     def _resolve_mac(self):
         try:
             out = subprocess.run(["bluetoothctl", "show"], capture_output=True,
                                  text=True, timeout=8).stdout
-            for line in out.splitlines():
-                line = line.strip()
-                if line.startswith("Controller "):
-                    mac = line.split()[1].upper()
-                    if len(mac) == 17:
-                        return mac
-        except (OSError, subprocess.TimeoutExpired, IndexError):
-            pass
-        try:
-            with open("/sys/class/net/wlan0/address") as f:
-                octets = f.read().strip().upper().split(":")
-            octets[0] = "%02X" % (int(octets[0], 16) ^ 0x02)
-            return ":".join(octets)
-        except (OSError, ValueError, IndexError):
-            return MAC_UNKNOWN
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] == "Controller":
+                mac = parts[1].upper()
+                if len(mac) == 17 and mac != "00:00:00:00:00:00":
+                    return mac
+        return None
+
+    def wait_for_identity(self):
+        """Block until the adapter's address is known."""
+        logged = False
+        while self.adapter_mac() is None:
+            if not logged:
+                _LOGGER.info("waiting for the Bluetooth adapter")
+                logged = True
+            time.sleep(IDENTITY_RETRY_S)
 
     def drop(self, conn):
         with self.lock:
@@ -749,12 +796,17 @@ class ProxyServer:
             self.monitor.subscribed.clear()
 
     def serve(self, scanner):
+        # Before the wait: the settings page waits for this file after a toggle.
+        publish_state(self.cfg, self.monitor, scanner, 0, self.active)
+        self.wait_for_identity()
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         host = resolve_bind(self.cfg)
         srv.bind((host, self.cfg["port"]))
         srv.listen(4)
         srv.settimeout(2.0)
+        # Only now: Home Assistant connects as soon as it sees the record.
+        publish_mdns(self.cfg, self.adapter_mac())
         _LOGGER.info("listening on %s:%d as %s (%s)",
                      host, self.cfg["port"], self.cfg["name"], self.adapter_mac())
         last_state = 0.0
@@ -779,11 +831,63 @@ class ProxyServer:
                 publish_state(self.cfg, self.monitor, scanner, n, self.active)
 
 
-# mDNS is published by a static avahi service file, /etc/avahi/services/
-# biscuit-btproxy.service, whose port the init script keeps in step with the
-# config. This image ships the avahi daemon but no avahi CLI tools, so there is
-# nothing to spawn - and a file avoids supervising a subprocess whose only job
-# is to sit there.
+def mdns_service(port, mac):
+    """The avahi service file that makes Home Assistant offer this proxy.
+
+    Home Assistant drops an _esphomelib._tcp record with no `mac` TXT entry
+    (mdns_missing_mac in its config flow), so a static file cannot do this: the
+    address is this device's own. `version` and `friendly_name` are what real
+    ESPHome devices send alongside it.
+    """
+    nl = chr(10)
+    txt = (("version", ESPHOME_API_RELEASE),
+           ("mac", mac.replace(":", "").lower()),
+           ("friendly_name", friendly_name()),
+           ("network", "wifi"))
+    return nl.join(
+        ['<?xml version="1.0" standalone=\'no\'?>',
+         '<!DOCTYPE service-group SYSTEM "avahi-service.dtd">',
+         "<!-- Written by biscuit-btproxy, removed while it is off. -->",
+         "<service-group>",
+         '  <name replace-wildcards="yes">%h Bluetooth Proxy</name>',
+         "  <service>",
+         "    <type>_esphomelib._tcp</type>",
+         "    <port>%d</port>" % port]
+        + ["    <txt-record>%s=%s</txt-record>" % (k, escape(v)) for k, v in txt]
+        + ["  </service>", "</service-group>", ""])
+
+
+def publish_mdns(cfg, mac):
+    """Advertise the proxy. avahi notices changes in its directory by itself.
+
+    This image ships the avahi daemon but no avahi CLI tools, and a file avoids
+    supervising a subprocess whose only job is to sit there. Rewritten only when
+    it differs, so a service restart is not announced to the network.
+    """
+    want = mdns_service(cfg["port"], mac)
+    try:
+        with open(AVAHI_SERVICE) as f:
+            if f.read() == want:
+                return
+    except OSError:
+        pass
+    try:
+        tmp = AVAHI_SERVICE + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(want)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, AVAHI_SERVICE)
+    except OSError as err:
+        _LOGGER.warning("cannot advertise over mDNS (%s); add this device "
+                        "by address in Home Assistant", err)
+
+
+def unpublish_mdns():
+    """A proxy that is off should not be offered to Home Assistant."""
+    try:
+        os.unlink(AVAHI_SERVICE)
+    except OSError:
+        pass
 
 
 def main():
@@ -798,6 +902,7 @@ def main():
         # service restart rather than a runlevel change, and the state file
         # still exists for the settings page to read.
         _LOGGER.info("disabled in %s; idling", CONFIG)
+        unpublish_mdns()
         publish_state(cfg, monitor, None, 0)
         while True:
             time.sleep(3600)
