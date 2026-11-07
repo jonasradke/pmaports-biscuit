@@ -182,7 +182,8 @@ def ha_peers():
     to one of this device's ESPHome API ports, voice assistant first.
 
     Link-local IPv6 peers are left out: /proc does not say which interface
-    they are on, and without that they cannot be dialled back.
+    they are on, and without that they cannot be dialled back. So is loopback:
+    that is the voice assistant relaying the Bluetooth proxy, not Home Assistant.
     """
     found = {port: [] for port in HA_API_PORTS}
     for path, v6 in PROC_NET_TCP:
@@ -198,7 +199,7 @@ def ha_peers():
                     if lport not in found:
                         continue
                     ip = _proc_ip(rip, v6)
-                    if ip.lower().startswith("fe80:"):
+                    if ip.lower().startswith("fe80:") or ip.startswith("127.") or ip == "::1":
                         continue
                     if ip not in found[lport]:
                         found[lport].append(ip)

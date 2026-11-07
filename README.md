@@ -30,7 +30,7 @@ or its affiliates.
 | Bluetooth speaker (A2DP) | Yes | Phones and computers play to the Echo, about 0.25 s behind, with the delay reported so video stays in sync. The phone's volume and the Echo's are one volume |
 | Bluetooth casting | Yes | The Echo plays through another Bluetooth speaker |
 | Bluetooth calls (HFP) | Partial | Hands-free calls through a paired phone, with echo cancellation and suppression. Works; call audio quality is still being tuned |
-| Home Assistant Bluetooth proxy | Yes | Over the ESPHome API, port 6054. Off by default, because scanning costs about half the 2.4 GHz Wi-Fi throughput; switch it on in the settings page's Home Assistant section |
+| Home Assistant Bluetooth proxy | Yes | Over the ESPHome API, as part of the Echo's device in Home Assistant (on port 6054 as its own device if the voice assistant isn't installed). Off by default, because scanning costs about half the 2.4 GHz Wi-Fi throughput; switch it on in the settings page's Home Assistant section |
 | Speaker | Yes | Speaker correction, multiband limiter, volume ceiling at the stock level. The amplifier stays on, so no sound starts with a pop. The correction curve is imported from your own Echo; without it the speaker plays flat |
 | Headphone jack | Yes | Output only, with plug detection |
 | Microphones and voice assistant | Yes | Optional app. All 7 microphones, a beamforming and echo-cancelling front end, on-device wake word (microWakeWord; "Alexa" by default, others selectable), Home Assistant Assist through linux-voice-assistant (ESPHome API, port 6053), timers; music ducks while you speak and fades back up once the reply has been heard |

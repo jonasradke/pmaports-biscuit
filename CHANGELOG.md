@@ -12,6 +12,33 @@ Releases of the jonasradke fork end in `-jr` and continue the build numbers
 from r299; they are built by GitHub Actions and served from the fork's own
 feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
 
+## v1.6-jr (build r310)
+
+With the voice assistant installed, the Echo is now one device in Home Assistant,
+with the Bluetooth proxy as part of it.
+
+### Updating
+
+Install it from Home Assistant, or from **Updates** on the settings page. If you
+added a separate "Bluetooth Proxy" device for this Echo, delete it afterwards.
+
+### Changes
+
+- **One Echo, one device in Home Assistant.** With the voice assistant
+  installed, the Bluetooth proxy is now part of the Echo's own device instead of
+  a second "Bluetooth Proxy" device. If you added that second device, it stays
+  offline after this update and you can delete it. Your proxy settings carry
+  over. An Echo without the voice assistant still has the proxy as its own
+  device on port 6054. While the voice assistant is paused, the proxy pauses
+  with it.
+- **Home Assistant shows the proxy as scanning.** Its Bluetooth page said "No
+  scanning" for the Echo even while advertisements were arriving. It now shows
+  active scanning, which is what the Echo does. The scanning mode setting that
+  appears there has no effect: this Echo can only scan actively.
+- **The Light scanning setting scans every 80 seconds instead of every 2
+  minutes.** At 2 minutes, Home Assistant treated the proxy as not scanning
+  between scans.
+
 ## v1.5-jr (build r309)
 
 Home Assistant can tell you about updates and install them, the Updates page is

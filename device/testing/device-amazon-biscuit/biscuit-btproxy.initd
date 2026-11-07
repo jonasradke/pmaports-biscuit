@@ -52,5 +52,8 @@ start_pre() {
 stop_post() {
 	# The service advertises itself while it runs; see publish_mdns.
 	rm -f /etc/avahi/services/biscuit-btproxy.service
+	# And the voice assistant takes this file as what the proxy offers, so it
+	# should not read the last run's during a restart. See btproxy_relay.py.
+	rm -f /run/biscuit-btproxy/state
 	return 0
 }

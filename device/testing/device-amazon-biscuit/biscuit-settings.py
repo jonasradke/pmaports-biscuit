@@ -1430,7 +1430,8 @@ BTPROXY_STATE = "/run/biscuit-btproxy/state"
 # throughput, so these are presented as how much airtime you are prepared to
 # give away. Values are (scan_secs, idle_secs).
 BTPROXY_CADENCES = [
-    ("light", "Light", 10, 110),
+    # Not slower than this: see MAX_IDLE_SECS in biscuit-btproxy.py.
+    ("light", "Light", 10, 70),
     ("balanced", "Balanced", 10, 50),
     ("responsive", "Responsive", 15, 25),
 ]
@@ -1483,6 +1484,9 @@ def btproxy_state():
         "idle_secs": idle,
         "cadence": cadence,
         "port": int(run.get("port") or cfg.get("port") or 6054),
+        # Part of the voice assistant's device in Home Assistant rather than
+        # one of its own, so there is nothing to add.
+        "relay": run.get("relay") == "1",
         "cadences": [{"value": k, "label": l} for k, l, _s, _i in BTPROXY_CADENCES],
     }
 
@@ -5607,9 +5611,11 @@ PAGES["homeassistant"] = async function () {
             reload();
           } catch (e) { toast(e.message, true); }
         }) }));
-      rows.push(row({ icon: "info", title: "Add in Home Assistant", value: "port " + (bp.port || 6054),
-        sub: "Found automatically as an ESPHome device. If not, add this device's " +
-             "address in the ESPHome integration." }));
+      if (!bp.relay) {
+        rows.push(row({ icon: "info", title: "Add in Home Assistant", value: "port " + (bp.port || 6054),
+          sub: "Found automatically as an ESPHome device. If not, add this device's " +
+               "address in the ESPHome integration." }));
+      }
     }
     blocks.push(group("Bluetooth proxy", boxed(rows),
       "Works with sensors that broadcast, such as BTHome, Xiaomi and Govee."));

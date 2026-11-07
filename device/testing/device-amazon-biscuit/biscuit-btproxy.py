@@ -3,8 +3,15 @@
 
 Home Assistant already talks to this device over the ESPHome native API, which
 is the same protocol ESPHome Bluetooth Proxies use - so forwarding BLE
-advertisements needs no new integration, no MQTT and no custom component. HA
-discovers a second ESPHome device and starts feeding its Bluetooth stack.
+advertisements needs no new integration, no MQTT and no custom component.
+
+WHICH DEVICE IT IS IN HOME ASSISTANT
+
+Home Assistant shows one device per ESPHome API endpoint. So when the voice
+assistant is installed, this service listens on loopback only and advertises
+nothing: the voice assistant's connection on 6053 carries the proxy (see
+btproxy_relay.py in linux_voice_assistant), and the Echo is one device. Without
+the voice assistant, this service is its own device on port 6054.
 
 WHY THE ADVERTISEMENTS COME FROM AN HCI MONITOR SOCKET
 
@@ -80,6 +87,7 @@ STATE = os.path.join(STATE_DIR, "state")
 #   PASSIVE_SCAN       = 1 << 0   forward advertisements
 #   ACTIVE_CONNECTIONS = 1 << 1   let HA open GATT connections THROUGH us
 #   RAW_ADVERTISEMENTS = 1 << 5   send raw AD bytes rather than parsed fields
+#   STATE_AND_MODE     = 1 << 6   report whether and how the scanner is running
 #
 # ACTIVE_CONNECTIONS is set only when active.py loads and BTPROXY_ACTIVE is on.
 # It was left off at first because it needs the whole GATT message set mapped
@@ -92,6 +100,7 @@ STATE = os.path.join(STATE_DIR, "state")
 FEATURE_PASSIVE_SCAN = 1 << 0
 FEATURE_ACTIVE_CONNECTIONS = 1 << 1
 FEATURE_RAW_ADVERTISEMENTS = 1 << 5
+FEATURE_STATE_AND_MODE = 1 << 6
 
 # Shared connect exclusion with the :8080 settings portal. Mirrored in
 # biscuit-netcfg.py, which documents the measurements behind the contract: this
@@ -115,6 +124,12 @@ ESPHOME_API_RELEASE = "2026.5.1"
 SETTINGS_PORT_FILE = "/opt/persist/settings-port"
 DEFAULT_SETTINGS_PORT = 8080
 
+# The longest gap between scans. Home Assistant marks a remote scanner as not
+# scanning after 90 s without an advertisement (habluetooth's
+# SCANNER_WATCHDOG_TIMEOUT) and leaves it out when choosing a path to a device,
+# so a whole cycle has to fit well inside that.
+MAX_IDLE_SECS = 70
+
 # How often to look for the Bluetooth adapter while it is not up yet.
 IDENTITY_RETRY_S = 5.0
 
@@ -123,6 +138,13 @@ BIND_WAIT_S = 180
 BIND_RETRY_S = 2.0
 
 AVAHI_SERVICE = "/etc/avahi/services/biscuit-btproxy.service"
+
+# The voice assistant carries the proxy when it is enabled, and its package has
+# the relay. The runlevel rather than "is it running": at boot this service can
+# start first, and one look at the wrong moment would advertise a second device.
+VOICE_RUNLEVEL = "/etc/runlevels/default/biscuit-voice-assistant"
+VOICE_RELAY = ("/usr/lib/linux-voice-assistant/lib/python3.14/site-packages/"
+               "linux_voice_assistant/btproxy_relay.py")
 
 AF_BLUETOOTH = 31
 BTPROTO_HCI = 1
@@ -151,14 +173,23 @@ def interface_address(iface):
         return None
 
 
+def relay_mode():
+    """True when the voice assistant is Home Assistant's way in to this proxy."""
+    return os.path.exists(VOICE_RUNLEVEL) and os.path.exists(VOICE_RELAY)
+
+
 def resolve_bind(cfg):
     """The address to listen on.
+
+    Loopback when the voice assistant relays this proxy; nothing else needs it.
 
     "auto" means the configured interface's own IPv4. At boot Wi-Fi can come up
     after this service, so give it BIND_WAIT_S to get an address. Only if it
     still has none, fall back to 0.0.0.0 and SAY SO, because silently listening
     everywhere is exactly the behaviour this setting exists to stop.
     """
+    if cfg.get("relay"):
+        return "127.0.0.1"
     want = str(cfg.get("bind", "auto")).strip()
     if want and want != "auto":
         return want
@@ -257,6 +288,7 @@ def load_config():
                         cfg["name"] = v
     except OSError:
         pass
+    cfg["idle_secs"] = min(cfg["idle_secs"], MAX_IDLE_SECS)
     return cfg
 
 
@@ -320,6 +352,20 @@ MT_SUBSCRIBE_STATES_REQUEST = 20
 MT_SUBSCRIBE_BLUETOOTH_LE_ADVERTISEMENTS = 66
 MT_BLUETOOTH_LE_RAW_ADVERTISEMENTS_RESPONSE = 93
 MT_UNSUBSCRIBE_BLUETOOTH_LE_ADVERTISEMENTS = 87
+MT_BLUETOOTH_SCANNER_STATE_RESPONSE = 126
+MT_BLUETOOTH_SCANNER_SET_MODE_REQUEST = 127
+
+# BluetoothScannerStateResponse: state = 1, mode = 2, configured_mode = 3.
+# Encoded here because the vendored api_pb2 predates the message.
+#
+# Home Assistant shows "No scanning" for a proxy that does not report this.
+# The mode is always active, because that is what `bluetoothctl scan le` runs
+# (LE Set Scan Parameters type 1, and scan responses arrive), and BlueZ offers no
+# passive equivalent through it. So a request for another mode is answered with
+# the truth rather than obeyed, which Home Assistant's Auto mode copes with: its
+# short active windows simply find the scanner already active.
+SCANNER_RUNNING_ACTIVE = bytes((0x08, 2, 0x10, 1, 0x18, 1))
+SCANNER_IDLE_ACTIVE = bytes((0x10, 1, 0x18, 1))
 
 
 # ------------------------------------------------------- advertisements -----
@@ -524,8 +570,12 @@ class Scanner(threading.Thread):
             self._stop.wait(self.idle_secs)
 
 
-def publish_state(cfg, monitor, scanner, clients, activep=None):
-    """A small status file, the shape the ring and volume services already use."""
+def publish_state(cfg, monitor, scanner, clients, activep=None, mac=None):
+    """A small status file, the shape the ring and volume services already use.
+
+    `mac` only once the service is listening: the voice assistant takes it to
+    mean that it can tell Home Assistant about the proxy and connect.
+    """
     nl = chr(10)
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
@@ -537,6 +587,9 @@ def publish_state(cfg, monitor, scanner, clients, activep=None):
             f.write("port=%d%s" % (cfg["port"], nl))
             f.write("bind=%s%s" % (cfg.get("bind", "auto"), nl))
             f.write("interface=%s%s" % (cfg.get("interface", "wlan0"), nl))
+            f.write("relay=%s%s" % ("1" if cfg.get("relay") else "0", nl))
+            if mac:
+                f.write("mac=%s%s" % (mac, nl))
             f.write("clients=%d%s" % (clients, nl))
             f.write("subscribed=%s%s" % ("1" if monitor.subscribed.is_set() else "0", nl))
             f.write("adverts_seen=%d%s" % (monitor.seen, nl))
@@ -573,6 +626,10 @@ class ProxyConnection(threading.Thread):
     def send(self, msg_type, msg):
         self.sock.sendall(encode_frame(msg_type, msg.SerializeToString()))
 
+    def send_scanner_state(self):
+        state = SCANNER_IDLE_ACTIVE if self.server.scan_paused else SCANNER_RUNNING_ACTIVE
+        self.sock.sendall(encode_frame(MT_BLUETOOTH_SCANNER_STATE_RESPONSE, state))
+
     def device_info(self):
         info = DeviceInfoResponse()
         info.name = self.cfg["name"]
@@ -589,7 +646,7 @@ class ProxyConnection(threading.Thread):
         info.project_version = release_label()
         # This is what puts "Visit" on the device page in Home Assistant.
         info.webserver_port = settings_port()
-        flags = FEATURE_PASSIVE_SCAN | FEATURE_RAW_ADVERTISEMENTS
+        flags = FEATURE_PASSIVE_SCAN | FEATURE_RAW_ADVERTISEMENTS | FEATURE_STATE_AND_MODE
         if self.cfg.get("active"):
             flags |= FEATURE_ACTIVE_CONNECTIONS
         info.bluetooth_proxy_feature_flags = flags
@@ -668,6 +725,11 @@ class ProxyConnection(threading.Thread):
             _LOGGER.info("Home Assistant subscribed to advertisements")
             self.subscribed = True
             self.monitor.subscribed.set()
+            # Home Assistant takes this as proof the subscription landed, and
+            # keeps resubscribing and warning until it arrives.
+            self.send_scanner_state()
+        elif msg_type == MT_BLUETOOTH_SCANNER_SET_MODE_REQUEST:
+            self.send_scanner_state()
         elif msg_type == MT_UNSUBSCRIBE_BLUETOOTH_LE_ADVERTISEMENTS:
             _LOGGER.info("Home Assistant unsubscribed")
             self.subscribed = False
@@ -723,6 +785,7 @@ class ProxyServer:
         self.lock = threading.Lock()
         self._mac = None
         self.active = None
+        self.scan_paused = False
         if cfg.get("active"):
             # Imported lazily via the module so a passive-only device never
             # loads jeepney or opens a bus connection.
@@ -748,6 +811,14 @@ class ProxyServer:
         if self.scanner is not None:
             self.scanner.set_paused(paused)
         bt_busy_set(paused)
+        self.scan_paused = paused
+        with self.lock:
+            subscribers = [c for c in self.clients if c.subscribed]
+        for conn in subscribers:
+            try:
+                conn.send_scanner_state()
+            except OSError:
+                pass
 
     def adapter_mac(self):
         """The Bluetooth adapter's address, or None until it is up.
@@ -820,7 +891,10 @@ class ProxyServer:
         srv.listen(4)
         srv.settimeout(2.0)
         # Only now: Home Assistant connects as soon as it sees the record.
-        publish_mdns(self.cfg, self.adapter_mac())
+        if self.cfg.get("relay"):
+            unpublish_mdns()
+        else:
+            publish_mdns(self.cfg, self.adapter_mac())
         _LOGGER.info("listening on %s:%d as %s (%s)",
                      host, self.cfg["port"], self.cfg["name"], self.adapter_mac())
         last_state = 0.0
@@ -842,7 +916,13 @@ class ProxyServer:
                 last_state = now
                 with self.lock:
                     n = len(self.clients)
-                publish_state(self.cfg, self.monitor, scanner, n, self.active)
+                publish_state(self.cfg, self.monitor, scanner, n, self.active,
+                              self.adapter_mac())
+                if relay_mode() != bool(self.cfg.get("relay")):
+                    # The voice assistant was installed or removed. Exiting is
+                    # a respawn, which starts over as the right kind of device.
+                    _LOGGER.info("voice assistant changed; restarting")
+                    return
 
 
 def mdns_service(port, mac):
@@ -909,6 +989,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s")
     cfg = load_config()
+    cfg["relay"] = relay_mode()
 
     monitor = MonitorReader()
     if not cfg["enabled"]:

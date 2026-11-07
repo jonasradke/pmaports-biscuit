@@ -65,6 +65,7 @@ from pymicro_wakeword import MicroWakeWord
 from pyopen_wakeword import OpenWakeWord
 
 from .api_server import APIServer
+from . import btproxy_relay
 from .entity import (
     ButtonEventSensorEntity,
     LEDLightEntity,
@@ -150,6 +151,9 @@ class VoiceSatelliteProtocol(APIServer):
         # The entity generation this connection enumerated; see
         # PeripheralAPIServer._reconnect_when_settled. None until it has.
         self._listed_generation: Optional[int] = None
+        # BISCUIT: this connection's link to the Bluetooth proxy, so that one
+        # Echo is one device in Home Assistant. See btproxy_relay.py.
+        self._btproxy = btproxy_relay.ProxyRelay(self)
         if self.state.satellite is None:
             self.state.satellite = self
         if not self.state.connections:
@@ -1054,6 +1058,7 @@ class VoiceSatelliteProtocol(APIServer):
                 voice_assistant_feature_flags=self.supported_features,
                 # BISCUIT: puts "Visit" on the device page in Home Assistant.
                 webserver_port=_settings_port(),
+                **self._btproxy.device_fields(),
             )
         elif isinstance(msg, SubscribeVoiceAssistantRequest):
             if msg.subscribe:
@@ -1606,6 +1611,7 @@ class VoiceSatelliteProtocol(APIServer):
     # ------------------------------------------------------------------
 
     def connection_lost(self, exc: Optional[Exception]) -> None:
+        self._btproxy.close()
         _qualification_v1.configured(self, False)
         super().connection_lost(exc)
 
@@ -1704,6 +1710,10 @@ class VoiceSatelliteProtocol(APIServer):
         _LOGGER.info("Disconnected from Home Assistant; waiting for reconnection")
 
     def process_packet(self, msg_type: int, packet_data: bytes) -> None:
+        if msg_type in btproxy_relay.TO_PROXY:
+            self._btproxy.forward(msg_type, packet_data)
+            return
+
         super().process_packet(msg_type, packet_data)
 
         if msg_type == PROTO_TO_MESSAGE_TYPE[AuthenticationRequest]:

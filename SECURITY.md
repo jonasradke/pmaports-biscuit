@@ -22,7 +22,7 @@ are no backports.
 | Your network, port 8080 | The settings page | Your account's password; plain HTTP, no TLS. The port can be changed on the settings page. The shipped `user` account is refused here except over USB (see below) |
 | Your network, port 22 | SSH | Your account's password or keys |
 | Your network, port 6053 | Voice assistant (ESPHome API), only if the voice app is installed | None: the plain ESPHome API with no encryption key, like an ESPHome device set up without one. Anything that can reach the Echo's Wi-Fi address can connect |
-| Your network, port 6054 | Bluetooth proxy (ESPHome API). **Off by default**; switched on in the settings page's Home Assistant section | As above |
+| Your network, port 6054 | Bluetooth proxy (ESPHome API), only without the voice assistant; with it, the proxy listens on loopback and is reached through port 6053. **Off by default**; switched on in the settings page's Home Assistant section | As above |
 | USB, if you switch on network mode | SSH and the settings page over the cable | As above |
 
 ### The setup hotspot is an open network
@@ -52,10 +52,10 @@ within range can join it while it is up.
   that is already set up, the Echo can stay joined to your Wi-Fi during setup
   (the hotspot runs on a second interface), and a client of the setup network
   can reach the Echo's address on your network through it. The ESPHome APIs
-  listen there: the voice assistant on 6053 (if installed) and the Bluetooth
-  proxy on 6054 (if switched on; if the Echo has no address on your network,
-  the proxy listens on every address, including `192.168.4.1`). Both are
-  unauthenticated, as they are on your own network. Only SSH and the settings
+  listen there: the voice assistant on 6053 (if installed, and it carries the
+  Bluetooth proxy when that is switched on), or without the voice assistant the
+  proxy on 6054 (if switched on; if the Echo has no address on your network, it
+  listens on every address, including `192.168.4.1`). Both are unauthenticated, as they are on your own network. Only SSH and the settings
   page are closed to the setup network.
 
 Finish setup soon after starting it, and set it up out of range of people you
