@@ -12,6 +12,62 @@ Releases of the jonasradke fork end in `-jr` and continue the build numbers
 from r299; they are built by GitHub Actions and served from the fork's own
 feed, `https://jonasradke.github.io/pmaports-biscuit/edge`.
 
+## v1.7-jr (build r311)
+
+A boot image that undoes itself if it does not work, and several Echos that work
+together. Also, for owners who want it, Amazon's own wake word engine, imported
+from their own backup.
+
+### Updating
+
+Install it from Home Assistant, or from **Updates** on the settings page. Nothing
+new turns itself on.
+
+### Changes
+
+- **A boot image that fails is undone.** After an update that writes the boot
+  image, the Echo has to reach a working state within two starts, or it restores
+  the last image that did. It cannot help when the failure comes before Linux
+  starts: that still needs TWRP.
+- **Only the Echo that hears you best answers.** Pair two Echos on their settings
+  pages (**Home Assistant › Several Echos**) and compare the code they show.
+- **Intercom between paired Echos.** Call another paired Echo from the settings
+  page or Home Assistant. It chimes, and someone answers with its action button.
+  **Answer calls by itself** is off unless you turn it on. The ring is green for
+  a call, with its own light for calling, ringing and an open microphone.
+- **Next timer sensors.** The next timer's end, name and length are entities.
+- **"Stop" after the wake word stops here.** It pauses the music and ends the
+  run at once, with no trip through the assistant.
+- **Confirm sign-ins with the action button.** An option under Security: after
+  the password, someone has to press the button on this Echo. The ring breathes
+  amber while it waits.
+- **Amazon's wake word engine, optional.** Import it from your own Fire OS system
+  image under **Stock files**, using `biscuit-export-amazon-wake.py`, then choose
+  "Alexa (Amazon engine)" as the wake word. It knows "Alexa" and "Alexa, stop",
+  which stops at once when nothing follows it. The Wake word 1 threshold works
+  for it, from 0.7 to 0.99, and it is told when anything is playing, Sendspin and
+  Bluetooth too, so it still hears over music.
+  Unlike everything else imported, this one runs Amazon's code on the Echo, so it
+  runs with no network and no privileges. While in use it costs about 30% of one
+  core and 24 MB of memory. Any Fire OS build can be imported: the Echo runs the
+  files first and keeps what it had if they do not work. Only one build has been
+  tried, though, so on another, say "Alexa" to it to find out. A reflash removes
+  it: 24 MB does not fit in the 4 MB free in what a reflash keeps.
+- **Whisper detection, with Amazon's engine imported and its model added.** A
+  **Last request whispered** sensor, for an automation to answer quietly. The
+  model is not in the firmware, only an owner's Amazon sign-in can fetch it, and
+  this project has not been able to run it: treat this one as untested.
+- **Sound detection, with Amazon's engine imported.** Reports alarms, breaking
+  glass, a dog, a baby, snoring, coughing, water and beeping appliances as an event in Home
+  Assistant. Off by default, and about 40% of one core while on. Treat it as a hint, and never as your only
+  smoke alarm.
+- **Wi-Fi motion, experimental.** Off by default. A motion sensor from the Wi-Fi
+  level, with a sensitivity from 1 to 10. This kernel's driver reports the level
+  coarsely, so it may well miss movement. A driver change for a far better reading
+  is ready in `tools/pending-kernel`, but it is not in this
+  release's kernel: it has not been built or tested yet. The sensor uses it by
+  itself once a kernel has it.
+
 ## v1.6-jr (build r310)
 
 With the voice assistant installed, the Echo is now one device in Home Assistant,

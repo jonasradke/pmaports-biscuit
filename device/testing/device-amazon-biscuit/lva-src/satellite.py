@@ -13,6 +13,7 @@
 
 from . import qualification_v1 as _qualification_v1
 import asyncio
+import datetime
 import hashlib
 import logging
 import posixpath
@@ -415,6 +416,10 @@ class VoiceSatelliteProtocol(APIServer):
         self.register_pending_numbers()          # BISCUIT
         self.register_pending_switches()         # BISCUIT
         self.register_pending_sensors()          # BISCUIT
+        self.register_timer_sensors()            # BISCUIT
+        self.register_sound_event()              # BISCUIT
+        self.register_whisper()                  # BISCUIT
+        self.register_intercom()                 # BISCUIT
         self.register_pending_binary_sensors()   # BISCUIT
         self.register_pending_updates()          # BISCUIT
         # Materialise ButtonEventSensorEntity if a peripheral already registered
@@ -815,6 +820,13 @@ class VoiceSatelliteProtocol(APIServer):
     def handle_voice_event(self, event_type: VoiceAssistantEventType, data: Dict[str, str]) -> None:
         _LOGGER.info("Voice event: type=%s, data=%s", event_type.name, data)
 
+        # BISCUIT: what Home Assistant still sends about a run the stop shortcut
+        # ended. A reply to "stop" must not start playing after it stopped.
+        if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
+            self._stop_shortcut = False
+        elif self._stop_shortcut:
+            return
+
         if event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_START:
             self._tts_url = data.get("url")
             self._tts_played = False
@@ -843,6 +855,17 @@ class VoiceSatelliteProtocol(APIServer):
                 if stt_text:
                     self._emit(LVAEvent.STT_TEXT, {"text": stt_text})
                     _LOGGER.debug("STT transcript: %s", stt_text)
+                    if self._is_stop_phrase(stt_text):
+                        self._stop_by_voice()
+                        return
+                # BISCUIT: Amazon's engine heard "Alexa, stop", and what came back is
+                # nothing, or one word speech-to-text made of it. Longer than that is
+                # a sentence that begins with stop, and the engine cannot tell.
+                said_stop, self._alexa_stop_heard = self._alexa_stop_heard, False
+                self._alexa_stop_at = None
+                if said_stop and len(stt_text.split()) <= 1:
+                    self._stop_by_voice()
+                    return
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_INTENT_PROGRESS:
             if data.get("tts_start_streaming") == "1":
@@ -864,6 +887,8 @@ class VoiceSatelliteProtocol(APIServer):
             self.play_tts()
 
         elif event_type == VoiceAssistantEventType.VOICE_ASSISTANT_RUN_END:
+            self._alexa_stop_heard = False  # BISCUIT
+            self._alexa_stop_at = None      # BISCUIT
             self._is_streaming_audio = False
             if not self._tts_played:
                 self._pipeline_active = False
@@ -901,6 +926,202 @@ class VoiceSatelliteProtocol(APIServer):
     # playback, and a long announcement has no events while it plays - so the
     # deadline is simply pushed out again.
     RUN_STALL_S = 45.0
+
+    # BISCUIT: the whole of what was said, not a word somewhere in it. "Stop the
+    # kitchen timer" is a request for Home Assistant.
+    STOP_PHRASES = frozenset(("stop", "stopp", "halt", "arrête", "arrete", "basta", "para"))
+    _stop_shortcut = False
+
+    @classmethod
+    def _is_stop_phrase(cls, text: str) -> bool:
+        return text.strip().strip(".,!?¡¿…\"' ").casefold() in cls.STOP_PHRASES
+
+    _alexa_stop_heard = False
+    _alexa_stop_at: Optional[float] = None
+
+    # After the keyword: the tail of the word itself, then how long a silence means
+    # the sentence ended there, and how loud counts as still talking.
+    ALEXA_STOP_TAIL_S = 0.15
+    ALEXA_STOP_QUIET_S = 0.7
+    ALEXA_STOP_MIN_RMS = 200.0
+    ALEXA_STOP_SPEECH = 0.3
+
+    def alexa_stop(self) -> None:
+        """Amazon's engine accepted "stop" right after "Alexa".
+
+        While it is speaking or ringing that ends it at once. While the words are
+        still going to Home Assistant it leaves a note: "Alexa, stop the kitchen timer"
+        fires the same keyword. after_alexa_stop then listens for whether more follows.
+        """
+        if self._in_a_call():
+            self.stop()
+        elif self._is_streaming_audio or (self._pipeline_active and not self._tts_played
+                                        and not self._processing):
+            self._alexa_stop_heard = True
+            self._alexa_stop_at = time.monotonic()
+        elif self._pipeline_active or self._timer_finished:
+            _LOGGER.info("Alexa, stop: stopping what is playing")
+            self.stop()
+
+    def after_alexa_stop(self, rms: float, peak: float, now: Optional[float] = None) -> None:
+        """Each block after that note. Quiet straight after the word: it was only "Alexa,
+        stop", and it stops now, with no trip through speech-to-text. More speech: a
+        sentence that begins with stop, and the transcript decides as before."""
+        if self._alexa_stop_at is None:
+            return
+        elapsed = (time.monotonic() if now is None else now) - self._alexa_stop_at
+        if elapsed < self.ALEXA_STOP_TAIL_S:
+            return
+        if rms > max(self.ALEXA_STOP_MIN_RMS, self.ALEXA_STOP_SPEECH * peak):
+            self._alexa_stop_at = None
+        elif elapsed >= self.ALEXA_STOP_QUIET_S:
+            self._stop_by_voice()
+
+    def register_intercom(self) -> None:
+        """The intercom's entities, on the shared state like the timer sensors."""
+        from .entity import MuteSwitchEntity, TextSensorEntity
+
+        intercom = getattr(self.state, "intercom", None)
+        if intercom is None:
+            return
+
+        def calling():
+            return intercom.active
+
+        def set_calling(on):
+            intercom.command("call" if on else "end")
+
+        known = getattr(self.state, "_biscuit_intercom_entities", None)
+        if known is None:
+            known = self.state._biscuit_intercom_entities = {
+                "state": TextSensorEntity(self, self._peripheral_key("intercom_state"),
+                                          object_id="intercom_state", name="Intercom",
+                                          icon="mdi:phone-in-talk"),
+                "switch": MuteSwitchEntity(self, self._peripheral_key("intercom_call"), "Intercom call",
+                                           "intercom_call", calling, set_calling),
+            }
+            known["state"].update_state(intercom.state)
+        for entity in known.values():
+            entity.server = self
+            if entity not in self.state.entities:
+                self.state.entities.append(entity)
+
+    def intercom_changed(self, status: str, peer: Optional[str]) -> None:
+        """From the intercom's thread: what the ring, the chime and Home Assistant show."""
+        from aioesphomeapi.api_pb2 import SwitchStateResponse  # pylint: disable=no-name-in-module
+
+        known = getattr(self.state, "_biscuit_intercom_entities", None)
+        if status == "ringing":
+            self._emit(LVAEvent.INTERCOM_RINGING)
+            self.duck()
+            self.state.tts_player.play(self.state.wakeup_sound)
+        elif status == "calling":
+            self._emit(LVAEvent.INTERCOM_CALLING)
+        elif status == "talking":
+            # Saying "stop" hangs up.
+            self.duck()
+            self.state.active_wake_words.add(self.state.stop_word.id)
+            self._emit(LVAEvent.INTERCOM_TALKING)
+        else:
+            self.state.active_wake_words.discard(self.state.stop_word.id)
+            self.unduck()
+            self._emit(LVAEvent.IDLE)
+            self._emit_after_timer()
+        if known:
+            known["state"].update_state(status)
+            known["switch"].sync_with_state()
+            try:
+                self.send_messages([known["state"]._get_state_message(),
+                                    SwitchStateResponse(key=known["switch"].key, state=known["switch"]._switch_state)])
+            except Exception:  # noqa: BLE001 - a dead connection is cleaned up elsewhere
+                _LOGGER.debug("Could not send the intercom state", exc_info=True)
+
+    def _in_a_call(self) -> bool:
+        intercom = getattr(self.state, "intercom", None)
+        return intercom is not None and intercom.active
+
+    def register_sound_event(self) -> None:
+        """Amazon's sound detector, as an event entity, when the owner imported it."""
+        from . import amazon_wake
+        from .entity import SoundEventEntity
+
+        known = getattr(self.state, "_biscuit_sound_event", None)
+        if known is not None:
+            known.server = self
+            if known not in self.state.entities:
+                self.state.entities.append(known)
+            return
+        if not amazon_wake.sound_installed():
+            return
+        known = self.state._biscuit_sound_event = SoundEventEntity(
+            self, self._peripheral_key("sound_heard"), "Sound", "sound_heard",
+            amazon_wake.SOUND_EVENT_TYPES)
+        self.state.entities.append(known)
+
+    def register_whisper(self) -> None:
+        """Amazon's whisper detector, as a binary sensor, when the owner imported its model."""
+        from . import amazon_wake
+        from .entity import PeripheralBinarySensorEntity
+
+        known = getattr(self.state, "_biscuit_whisper_sensor", None)
+        if known is not None:
+            known.server = self
+            if known not in self.state.entities:
+                self.state.entities.append(known)
+            return
+        if not amazon_wake.whisper_installed():
+            return
+        known = self.state._biscuit_whisper_sensor = PeripheralBinarySensorEntity(
+            self, self._peripheral_key("last_request_whispered"), "Last request whispered",
+            "last_request_whispered", icon="mdi:account-voice-off")
+        self.state.entities.append(known)
+
+    def whisper_result(self, whispered: bool) -> None:
+        entity = getattr(self.state, "_biscuit_whisper_sensor", None)
+        if entity is None:
+            return
+        entity.update_state(whispered)
+        try:
+            self.send_messages([entity._get_state_message()])
+        except Exception:  # noqa: BLE001 - a dead connection is cleaned up elsewhere
+            _LOGGER.debug("Could not send the whisper state", exc_info=True)
+
+    def sounds_heard(self, names) -> None:
+        entity = getattr(self.state, "_biscuit_sound_event", None)
+        if entity is None:
+            return
+        for name in names:
+            _LOGGER.info("Sound heard: %s", name)
+            entity.update_state(name)
+            try:
+                self.send_messages([entity._get_state_message()])
+            except Exception:  # noqa: BLE001 - a dead connection is cleaned up elsewhere
+                _LOGGER.debug("Could not send the sound event", exc_info=True)
+
+    def _stop_by_voice(self) -> None:
+        """"Stop", said after the wake word: the music pauses and the run ends here.
+
+        Without this it is a full trip through speech-to-text and, with an AI agent,
+        the model, and the answer interrupts the very thing being stopped.
+        """
+        _LOGGER.info("Stop said after the wake word; ending the run here")
+        self._alexa_stop_heard = False
+        self._alexa_stop_at = None
+        self._stop_shortcut = True
+        self._end_run_watchdog()
+        self._is_streaming_audio = False
+        self._continue_conversation = False
+        self._tts_played = False
+        self._processing = False
+        try:
+            self.send_messages([VoiceAssistantRequest(start=False)])
+        except Exception:  # noqa: BLE001 - a dead connection is cleaned up elsewhere
+            _LOGGER.exception("Could not ask Home Assistant to stop the run")
+        self.state.active_wake_words.discard(self.state.stop_word.id)
+        self._pipeline_active = False
+        self.unduck()
+        self._emit(LVAEvent.STOP_REQUESTED)
+        self._emit_after_timer()
 
     def _touch_run(self) -> None:
         timer = threading.Timer(self.RUN_STALL_S, lambda: self._on_run_watchdog(timer))
@@ -977,6 +1198,7 @@ class VoiceSatelliteProtocol(APIServer):
             "seconds_left": msg.seconds_left,
             # Paused timers used to be indistinguishable from running ones.
             "is_active": bool(getattr(msg, "is_active", True)),
+            "ends_at": time.time() + msg.seconds_left,
         }
 
         if event_type == VoiceAssistantTimerEventType.VOICE_ASSISTANT_TIMER_STARTED:
@@ -1004,6 +1226,8 @@ class VoiceSatelliteProtocol(APIServer):
                 self.state._biscuit_ringing_timer = timer_data
                 self._emit(LVAEvent.TIMER_RINGING, timer_data)
                 self._play_timer_finished(self._timer_generation)
+
+        self._publish_timer_sensors()
 
     # ------------------------------------------------------------------
     # Message routing
@@ -1234,8 +1458,14 @@ class VoiceSatelliteProtocol(APIServer):
             _LOGGER.debug("Ignoring wake word - pipeline already active")
             return
 
+        if self._in_a_call():
+            _LOGGER.debug("Ignoring wake word - on the intercom")
+            return
+
         wake_word_phrase = wake_word.wake_word  # type: ignore[union-attr]
         _LOGGER.debug("Detected wake word: %s", wake_word_phrase)
+        self._stop_shortcut = False
+        self._alexa_stop_heard = False
 
         self._end_timer_ring()
         _LOGGER.debug("Stopping timer finished sound")
@@ -1308,6 +1538,9 @@ class VoiceSatelliteProtocol(APIServer):
         self._emit(LVAEvent.LISTENING)
 
     def stop(self) -> None:
+        if self._in_a_call():
+            self.state.intercom.command("end")
+            return
         self.state.active_wake_words.discard(self.state.stop_word.id)
         self._pipeline_active = False
         self._end_run_watchdog()
@@ -1481,6 +1714,71 @@ class VoiceSatelliteProtocol(APIServer):
         while len(timers) > self.MAX_KNOWN_TIMERS:
             timers.pop(next(iter(timers)))
         return timers
+
+    # A timer Home Assistant never reported the end of is gone this long after
+    # it should have finished, rather than counting down to the past forever.
+    TIMER_STALE_S = 10.0
+    _timer_sensor_handle = None
+
+    def register_timer_sensors(self) -> None:
+        """The next timer, as entities. BISCUIT.
+
+        Home Assistant tells a satellite about its timers and shows them nowhere:
+        they exist only as a voice reply and the ring. These put the next one on a
+        dashboard. Kept on the shared state, so a reconnect has the same entities.
+        """
+        from .entity import PeripheralSensorEntity, TextSensorEntity
+
+        known = getattr(self.state, "_biscuit_timer_sensors", None)
+        if known is not None:
+            for entity in known.values():
+                entity.server = self
+                if entity not in self.state.entities:
+                    self.state.entities.append(entity)
+            return
+        known = self.state._biscuit_timer_sensors = {}
+
+        def add(slot, make, object_id, **kwargs):
+            known[slot] = make(self, self._peripheral_key(object_id), object_id=object_id, **kwargs)
+            self.state.entities.append(known[slot])
+
+        add("ends", TextSensorEntity, "next_timer", name="Next timer",
+            icon="mdi:timer-outline", device_class="timestamp")
+        add("name", TextSensorEntity, "next_timer_name", name="Next timer name",
+            icon="mdi:timer-outline")
+        add("length", PeripheralSensorEntity, "next_timer_length", name="Next timer length",
+            unit_of_measurement="s", device_class="duration", icon="mdi:timer-sand")
+
+    def _next_timer(self) -> Optional[dict]:
+        now = time.time()
+        running = [t for t in self._known_timers.values()
+                   if t.get("is_active") and t.get("ends_at", 0) + self.TIMER_STALE_S > now]
+        return min(running, key=lambda t: t["ends_at"], default=None)
+
+    def _publish_timer_sensors(self) -> None:
+        sensors = getattr(self.state, "_biscuit_timer_sensors", None)
+        if not sensors:
+            return
+        timer = self._next_timer()
+        if timer is None:
+            sensors["ends"].update_state(None)
+            sensors["name"].update_state(None)
+            sensors["length"]._state = None
+        else:
+            ends = datetime.datetime.fromtimestamp(timer["ends_at"], datetime.timezone.utc)
+            sensors["ends"].update_state(ends.isoformat(timespec="seconds"))
+            sensors["name"].update_state(timer.get("name") or "")
+            sensors["length"].update_state(timer.get("total_seconds") or 0)
+        try:
+            self.send_messages([e._get_state_message() for e in sensors.values()])
+        except Exception:  # noqa: BLE001 - a dead connection is cleaned up elsewhere
+            _LOGGER.debug("Could not send the timer sensors", exc_info=True)
+        old, self._timer_sensor_handle = self._timer_sensor_handle, None
+        if old is not None:
+            old.cancel()
+        if timer is not None and self._loop is not None:
+            delay = max(1.0, timer["ends_at"] + self.TIMER_STALE_S + 0.5 - time.time())
+            self._timer_sensor_handle = self._loop.call_later(delay, self._publish_timer_sensors)
 
     def _emit_after_timer(self) -> None:
         """Show whatever timer state is left, after one timer stops mattering."""

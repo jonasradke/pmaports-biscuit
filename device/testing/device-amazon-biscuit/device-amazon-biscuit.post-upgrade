@@ -121,7 +121,16 @@ rc-update del biscuit-ring default 2>/dev/null || true
 rc-update add biscuit-ring boot 2>/dev/null || true
 rc-update add biscuit-mic-hub default 2>/dev/null || true
 rc-update add biscuit-mic-pump default 2>/dev/null || true
+rc-update add biscuit-boot-guard boot 2>/dev/null || true
+rc-update add biscuit-boot-confirm default 2>/dev/null || true
 rc-update -u 2>/dev/null || true
+# The helper for Amazon's engine, if the owner imports it. A 32-bit ARM file, so
+# it travels gzipped: abuild would run the aarch64 strip over it otherwise.
+if [ -f /usr/lib/biscuit-pryon/biscuit-pryon-helper.gz ]; then
+	gzip -dc /usr/lib/biscuit-pryon/biscuit-pryon-helper.gz > /usr/lib/biscuit-pryon/biscuit-pryon-helper.new \
+		&& chmod 755 /usr/lib/biscuit-pryon/biscuit-pryon-helper.new \
+		&& mv -f /usr/lib/biscuit-pryon/biscuit-pryon-helper.new /usr/lib/biscuit-pryon/biscuit-pryon-helper
+fi
 
 # Re-link the owner's imported stock DSP assets.
 #

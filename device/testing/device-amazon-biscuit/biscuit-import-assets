@@ -45,6 +45,12 @@ Exit codes, because a settings agent and an installer both call this:
   1  usage or I/O error
   2  the source cannot supply the requested profile
   3  installed assets are corrupt or from the wrong generation
+
+Amazon's wake word engine is the one exception to matching by content: the owner's
+Fire OS build decides its files, so `import-owner` takes them by where they sit in
+the exported folder, checks what each must be, and then has to prove the set works by
+running it. It records what it took in build.json beside them, so `verify` and the
+settings page can still tell later if a file has changed.
 """
 from __future__ import annotations
 import argparse
@@ -52,8 +58,14 @@ import hashlib
 import json
 import os
 import pathlib
+import re
+import shlex
 import shutil
+import struct
+import subprocess
 import sys
+import threading
+import time
 
 MANIFEST = "/usr/share/biscuit/biscuit-profile-assets.json"
 STORE = "/opt/persist/biscuit/assets"
@@ -73,6 +85,26 @@ def digest(path):
                 break
             h.update(block)
     return h.hexdigest()
+
+
+def store_of(args, spec):
+    """Where a profile is stored. The persist partition cannot hold Amazon's
+    engine (24 MB against 16 MiB in all), so that profile names its own store
+    on the root filesystem and is imported again after a reflash."""
+    return spec.get("store") or args.store
+
+
+def with_owner_build(profiles):
+    """A profile imported by import-owner is checked against what was imported."""
+    for name, spec in profiles.items():
+        if not spec.get("store"):
+            continue
+        try:
+            with open(os.path.join(spec["store"], name, "build.json"), encoding="utf-8") as handle:
+                spec["files"] = json.load(handle)["files"]
+        except (OSError, ValueError, KeyError):
+            pass
+    return profiles
 
 
 def load_manifest(path):
@@ -217,8 +249,9 @@ def cmd_import(args, profiles):
     # the previous store is kept until the swap succeeds.
     # Largest variant, since which one a source supplies is not known yet.
     need = sum(max(v["bytes"] for v in variants(item)) for item in have) * 2
+    store_root = pathlib.Path(store_of(args, spec))
     try:
-        root_for_space = pathlib.Path(args.store)
+        root_for_space = store_root
         while not root_for_space.exists() and root_for_space.parent != root_for_space:
             root_for_space = root_for_space.parent
         free = shutil.disk_usage(root_for_space).free
@@ -232,9 +265,9 @@ def cmd_import(args, profiles):
     # Stage the whole set, then move it into place. A half-written store is the
     # outcome worth engineering against: the chain would load some of one
     # generation's coefficients beside none of the other's.
-    store = pathlib.Path(args.store) / args.profile
-    staging = pathlib.Path(args.store) / ("." + args.profile + ".incoming")
-    previous = pathlib.Path(args.store) / ("." + args.profile + ".previous")
+    store = store_root / args.profile
+    staging = store_root / ("." + args.profile + ".incoming")
+    previous = store_root / ("." + args.profile + ".previous")
     try:
         shutil.rmtree(staging, ignore_errors=True)
         staging.mkdir(parents=True)
@@ -252,10 +285,21 @@ def cmd_import(args, profiles):
                 log("verification failed AFTER copying %s - nothing installed" % item["name"])
                 shutil.rmtree(staging, ignore_errors=True)
                 return 3
+            # A profile run by an unprivileged process says so: what it can
+            # reach must not depend on the umask of whoever imported it.
+            if item.get("mode"):
+                target.chmod(int(item["mode"], 8))
             print("verified %s (%d bytes%s)"
                   % (item["name"], chosen["bytes"],
                      ", " + chosen["note"] if chosen.get("note") else ""))
         shutil.rmtree(previous, ignore_errors=True)
+        if spec.get("dir_mode"):
+            mode = int(spec["dir_mode"], 8)
+            store_root.chmod(mode)
+            staging.chmod(mode)
+            for dirpath, dirnames, _files in os.walk(staging):
+                for name in dirnames:
+                    os.chmod(os.path.join(dirpath, name), mode)
         if store.exists():
             store.rename(previous)
         staging.rename(store)
@@ -267,6 +311,280 @@ def cmd_import(args, profiles):
 
     print("imported %d file(s) for %s into %s" % (len(have), args.profile, store))
     return cmd_activate(args, profiles)
+
+
+# ---------------------------------------------------------------- the owner's build of the engine
+
+OWNER_PROFILE = "amazonwake"
+OWNER_HELPER = "/usr/lib/biscuit-pryon/biscuit-pryon-helper"
+OWNER_NAME = re.compile(r"^[A-Za-z0-9._+-]+$")
+OWNER_REQUIRED = ("bin/linker", "lib/libpryon.so", "lib/libc.so",
+                  "models/ALEXA/pryon.manifest", "models/ALEXA/kw.cfg.json")
+OWNER_SYMBOLS = (b"PryonModelSet_New", b"PryonDecoder_NewSpotterAudioDecoder",
+                 b"PryonDecoder_PushAudioEventSamples", b"PryonApi_SetEnumeratedResultCallback")
+READY_S = 30.0
+ANSWER_S = 20.0
+
+
+def owner_group(rel):
+    """Which part of the engine a path belongs to, or None. Nothing else gets in."""
+    parts = rel.split("/")
+    if any(not OWNER_NAME.match(p) or p in (".", "..") for p in parts):
+        return None
+    if rel == "bin/linker":
+        return "core"
+    if len(parts) == 2 and parts[0] == "lib" and ".so" in parts[1]:
+        return "core"
+    if len(parts) >= 3 and parts[0] == "models":
+        return {"ALEXA": "core", "AED": "sound"}.get(parts[1])
+    if len(parts) >= 2 and parts[0] == "whisper":
+        return "whisper"
+    return None
+
+
+def owner_files(root):
+    """rel -> path of what the source holds. The settings page can only send flat names, so it sends
+    a/b as a__b."""
+    found = {}
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            if os.path.islink(path) or not os.path.isfile(path):
+                continue
+            rel = os.path.relpath(path, root).replace(os.sep, "/").replace("__", "/")
+            if owner_group(rel):
+                found[rel] = path
+    return found
+
+
+def is_arm32(path):
+    with open(path, "rb") as handle:
+        head = handle.read(20)
+    return (len(head) == 20 and head[:5] == b"\x7fELF\x01"
+            and struct.unpack("<H", head[18:20])[0] == 40)
+
+
+def owner_problem(rel, path):
+    """Why this file cannot be what it sits as, or None."""
+    if rel == "bin/linker" or rel.startswith("lib/"):
+        if not is_arm32(path):
+            return "%s is not a 32-bit ARM program" % rel
+    if rel == "lib/libpryon.so":
+        with open(path, "rb") as handle:
+            data = handle.read()
+        missing = [s.decode() for s in OWNER_SYMBOLS if s not in data]
+        if missing:
+            return "lib/libpryon.so has no %s" % ", ".join(missing)
+    if rel.endswith((".manifest", ".json")) and rel.startswith(("models/ALEXA/", "models/AED/", "whisper/")):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                json.load(handle)
+        except (OSError, ValueError) as err:
+            return "%s does not read: %s" % (rel, err)
+    return None
+
+
+def _isolated():
+    """As the voice assistant runs the engine: no network, no privileges."""
+    os.unshare(os.CLONE_NEWNET)
+    os.setgroups([])
+    os.setgid(65534)
+    os.setuid(65534)
+
+
+def smoke_test(helper, store):
+    """Run the imported set the way the voice assistant will. Returns (error or None, notes): the core
+    must load and take audio; a sound or whisper model that does not load is only said."""
+    sound = store / "models/AED/pryon.manifest"
+    whisper = store / "whisper/pryon_whisper.manifest"
+    command = shlex.split(helper) + [
+        (store / "models/ALEXA/pryon.manifest").as_posix(),
+        sound.as_posix() if sound.is_file() else "-",
+        whisper.as_posix() if whisper.is_file() else "-",
+    ]
+    env = {"ANDROID_ROOT": "/system", "ANDROID_DATA": "/data", "LD_LIBRARY_PATH": (store / "lib").as_posix()}
+    env.update({k: v for k, v in os.environ.items() if k == "SYSTEMROOT"})
+    try:
+        proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=env, cwd="/", preexec_fn=_isolated if hasattr(os, "unshare") else None)
+    except (OSError, subprocess.SubprocessError) as err:
+        return "it could not be started: %s" % err, []
+    lines, errors, seen = [], [], threading.Event()
+
+    def read_out():
+        for raw in proc.stdout:
+            lines.append(raw.decode("ascii", "replace").strip())
+            seen.set()
+        seen.set()
+
+    def read_err():
+        for raw in proc.stderr:
+            errors.append(raw.decode("utf-8", "replace").strip())
+
+    threading.Thread(target=read_out, daemon=True).start()
+    threading.Thread(target=read_err, daemon=True).start()
+
+    def wait_for(prefix, timeout):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            hit = next((x for x in lines if x.startswith(prefix)), None)
+            if hit:
+                return hit
+            if proc.poll() is not None:
+                time.sleep(0.2)
+                return next((x for x in lines if x.startswith(prefix)), None)
+            seen.clear()
+            seen.wait(0.5)
+        return None
+
+    def reason():
+        useful = [e for e in errors if "DT_FLAGS_1" not in e and "tzdata" not in e]
+        return useful[-1][:200] if useful else "status %s" % proc.poll()
+
+    notes = []
+    try:
+        if not wait_for("R", READY_S):
+            return "the engine did not start: %s" % reason(), []
+        if sound.is_file():
+            proc.stdin.write(struct.pack("<HBB", 0, 3, 1))
+            proc.stdin.flush()
+            answer = wait_for("S ", ANSWER_S)
+            if answer != "S on":
+                notes.append("The sound detector did not load.")
+        if whisper.is_file():
+            proc.stdin.write(struct.pack("<HBB", 0, 4, 0))
+            proc.stdin.flush()
+            answer = wait_for("W ", ANSWER_S)
+            if answer != "W ready":
+                notes.append("The whisper model did not load.")
+        silence = struct.pack("<H", 4096) + b"\0" * 8192
+        for _ in range(4):
+            proc.stdin.write(silence)
+        proc.stdin.flush()
+        proc.stdin.close()
+        code = proc.wait(30)
+        if code != 0:
+            return "the engine stopped on audio: %s" % reason(), notes
+    except (OSError, ValueError, subprocess.SubprocessError):
+        proc.kill()
+        return "the engine stopped on audio: %s" % reason(), notes
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    return None, notes
+
+
+def cmd_import_owner(args, profiles):
+    spec = profiles.get(OWNER_PROFILE)
+    if not spec:
+        log("the manifest has no %s profile" % OWNER_PROFILE)
+        return 1
+    if not os.path.isdir(args.source):
+        log("%s is not a directory" % args.source)
+        return 1
+    given = owner_files(args.source)
+    if not given:
+        log("Nothing in there belongs to the engine. Choose the folder biscuit-export-amazon-wake.py made.")
+        return 2
+
+    store_root = pathlib.Path(store_of(args, spec))
+    store = store_root / OWNER_PROFILE
+    staging = store_root / ("." + OWNER_PROFILE + ".incoming")
+    previous = store_root / ("." + OWNER_PROFILE + ".previous")
+
+    # What the upload does not bring stays: a whisper model can be added on its own.
+    groups = {owner_group(rel) for rel in given}
+    chosen = dict(given)
+    if store.is_dir():
+        for rel, path in owner_files(str(store)).items():
+            if owner_group(rel) not in groups and rel not in chosen:
+                chosen[rel] = path
+
+    missing = [rel for rel in OWNER_REQUIRED if rel not in chosen]
+    if missing:
+        log("Some files the engine needs are not in there: %s" % ", ".join(missing))
+        return 2
+    for rel, path in sorted(chosen.items()):
+        problem = owner_problem(rel, path)
+        if problem:
+            log(problem)
+            return 2
+
+    need = sum(os.path.getsize(p) for p in chosen.values()) + (1 << 20)
+    try:
+        at = store_root
+        while not at.exists() and at.parent != at:
+            at = at.parent
+        free = shutil.disk_usage(at).free
+        if free < need:
+            log("Not enough room on %s: %d MB free, %d MB needed." % (at, free >> 20, need >> 20))
+            return 1
+    except OSError:
+        pass
+
+    known = {}
+    for item in json.load(open(args.manifest, encoding="utf-8"))["profiles"][OWNER_PROFILE].get("files", []):
+        known[item["name"]] = item["sha256"]
+
+    entries = []
+    swapped = False
+    try:
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        for rel, path in sorted(chosen.items()):
+            target = staging / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+            mode = "0755" if rel == "bin/linker" else "0644"
+            target.chmod(int(mode, 8))
+            entries.append({"name": rel, "bytes": target.stat().st_size, "sha256": digest(target),
+                            "required": rel in OWNER_REQUIRED, "mode": mode})
+        # An empty file bionic's linker looks for; an upload cannot carry an empty file.
+        info = staging / "bin/linker_info"
+        info.touch()
+        info.chmod(0o644)
+        entries.append({"name": "bin/linker_info", "bytes": 0, "sha256": digest(info), "required": False,
+                        "mode": "0644"})
+        same_build = all(known.get(e["name"]) == e["sha256"] for e in entries
+                         if owner_group(e["name"]) == "core")
+        with open(staging / "build.json", "w", encoding="utf-8") as handle:
+            json.dump({"known": same_build, "files": entries}, handle)
+        (staging / "build.json").chmod(0o644)
+        mode = int(spec.get("dir_mode", "0755"), 8)
+        store_root.chmod(mode)
+        staging.chmod(mode)
+        for dirpath, dirnames, _files in os.walk(staging):
+            for name in dirnames:
+                os.chmod(os.path.join(dirpath, name), mode)
+        shutil.rmtree(previous, ignore_errors=True)
+        if store.exists():
+            store.rename(previous)
+        staging.rename(store)
+        swapped = True
+    except OSError as err:
+        log("could not write the store at %s: %s" % (store_root, err))
+        shutil.rmtree(staging, ignore_errors=True)
+        return 1
+
+    # The helper can only ever run from the final place: its interpreter is a fixed path.
+    notes = []
+    helper = args.helper or OWNER_HELPER
+    if args.helper or os.path.isfile(OWNER_HELPER):
+        error, notes = smoke_test(helper, store)
+        if error:
+            shutil.rmtree(store, ignore_errors=True)
+            if previous.exists():
+                previous.rename(store)
+            log("Not imported: %s. Whatever was here before is still here." % error)
+            return 2
+    shutil.rmtree(previous, ignore_errors=True)
+    assert swapped
+    words = "The engine started and took audio."
+    if not same_build:
+        words += (" This is not the Fire OS build this project was tested with, so say \"Alexa\" to it "
+                  "to find out whether it hears you.")
+    print(" ".join([words] + notes))
+    return 0
 
 
 def link_atomically(target, link_path):
@@ -387,7 +705,7 @@ def cmd_verify(args, profiles):
         directory = pathlib.Path(spec.get("directory", "/usr/share/biscuit"))
         if spec.get("activation") == "none":
             # Its consumer reads the store; check the store --store names.
-            directory = pathlib.Path(args.store) / profile
+            directory = pathlib.Path(store_of(args, spec)) / profile
         states = []
         for item in spec.get("files", []):
             path = directory / item["name"]
@@ -448,6 +766,11 @@ def main():
     p.add_argument("--profile", required=True)
     p.set_defaults(func=cmd_import)
 
+    p = sub.add_parser("import-owner", help="take the owner's build of Amazon's engine, and prove it runs")
+    p.add_argument("source")
+    p.add_argument("--helper", help="what to run it with (default: %s)" % OWNER_HELPER)
+    p.set_defaults(func=cmd_import_owner)
+
     p = sub.add_parser("activate", help="re-link imported assets (run after an upgrade)")
     p.add_argument("--profile")
     p.set_defaults(func=cmd_activate)
@@ -463,6 +786,8 @@ def main():
     profiles = load_manifest(args.manifest)
     if profiles is None:
         return 1
+    if args.command not in ("import", "import-owner"):
+        profiles = with_owner_build(profiles)
     return args.func(args, profiles)
 
 

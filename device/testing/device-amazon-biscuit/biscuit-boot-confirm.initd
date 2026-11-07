@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+name="biscuit-boot-confirm"
+description="Self test this boot, then keep its image as proven or go back"
+
+# In the background: the self test waits three minutes into the boot, and nothing
+# else should wait with it.
+
+depend() {
+	after biscuit-boot-guard
+}
+
+start() {
+	ebegin "Starting the boot self test"
+	setsid /usr/bin/biscuit-boot-update confirm >> /var/log/biscuit-boot-guard.log 2>&1 < /dev/null &
+	eend 0
+}

@@ -206,6 +206,17 @@ firmware in (`CONFIG_EXTRA_FIRMWARE` is empty); the `-nonfree-firmware`
 subpackage ships only the list that puts the owner's Bluetooth and FPGA
 files into the initramfs.
 
+The `amazonwake` profile is the one exception to what these files are: it is
+code. Its 28 files (Amazon's `libpryon.so`, Android's linker and libraries from the
+owner's Fire OS, and the wake word and sound models) are listed by hash in
+`biscuit-profile-assets.json`, and none of them is in this tree. What is in this
+tree is `biscuit-pryon-helper.c` (MIT), which calls the library, and its prebuilt
+`biscuit-pryon-helper.bin.gz`, built by `biscuit-pryon-helper.build.sh` against
+`biscuit-pryon-stubs.c` with no Amazon file involved. The library's interface comes
+from echo-dot-assist's reverse engineering (MIT), and so do the frame-level method in
+`biscuit_wifi_motion.py` and the driver patch in
+`tools/pending-kernel` (not part of any build).
+
 | Profile | File | Bytes | sha256 | In this tree |
 |---|---|---|---|---|
 | fireos5 | `biscuit-stock-fbf.cfg` | 460701 | `0160b5a6d2d925e0...` | no |

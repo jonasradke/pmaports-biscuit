@@ -57,6 +57,7 @@ import biscuit_ring_config as ring_config
 import biscuit_services as services
 import biscuit_system as system
 import biscuit_eq as eq_store
+import biscuit_login_wait
 import shutil
 
 # Stock files uploaded for an import wait here until the import checks them.
@@ -65,6 +66,14 @@ STOCK_UPLOAD_MAX = 2 << 20
 # Uploads wait in /run, which is memory, until the import checks them. Each
 # file is capped above; this caps them all together.
 STOCK_STAGING_MAX = 16 << 20
+# Amazon's engine is one 20 MB library among 24 MB in all: too much for memory,
+# where the others wait, so it waits on the system partition.
+AMAZON_KIND = "amazonwake"
+AMAZON_STAGING = "/var/lib/biscuit-amazon/.upload"
+AMAZON_UPLOAD_MAX = 24 << 20
+AMAZON_STAGING_MAX = 64 << 20
+AMAZON_STATE = "/run/biscuit-amazon-wake/state.json"
+SOUND_DETECTION_FILE = "/opt/persist/sound-detection"
 import os
 import socket
 import socketserver
@@ -633,7 +642,11 @@ ACTIVITIES = [
     ("pipeline_error",     "Error",                  "Voice assistant"),
     ("timer_ticking",      "Timer running",          "Voice assistant"),
     ("timer_ringing",      "Timer ringing",          "Voice assistant"),
+    ("intercom_calling",   "Intercom calling",       "Voice assistant"),
+    ("intercom_ringing",   "Intercom ringing",       "Voice assistant"),
+    ("intercom_talking",   "Intercom call open",     "Voice assistant"),
 
+    ("signin_wait",        "Sign-in waiting for the button", "Device"),
     ("booting",            "While booting",          "Device"),
     ("music",              "Music playing",          "Device"),
     ("boot",               "Finished booting",       "Device"),
@@ -1877,6 +1890,103 @@ def updates_state():
     return u
 
 
+ARBITRATION_RUN = "/run/biscuit-arbitration"
+ARBITRATION_CONFIG = "/opt/persist/arbitration.json"
+ARBITRATION_COMMANDS = ("pair", "cancel", "forget", "on", "off")
+
+
+def arbitration_state():
+    """What the voice assistant last said about arbitration. It runs there,
+    because that is where the wake word is heard."""
+    try:
+        with open(os.path.join(ARBITRATION_RUN, "state.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"unavailable": True, "paired": os.path.exists(ARBITRATION_CONFIG)}
+
+
+def arbitration_command(command):
+    os.makedirs(ARBITRATION_RUN, exist_ok=True)
+    tmp = os.path.join(ARBITRATION_RUN, "command.tmp")
+    with open(tmp, "w", encoding="ascii") as f:
+        f.write(command)
+    os.replace(tmp, os.path.join(ARBITRATION_RUN, "command"))
+
+
+INTERCOM_RUN = "/run/biscuit-intercom"
+INTERCOM_COMMANDS = ("call", "answer", "end", "auto:on", "auto:off")
+
+
+def intercom_state():
+    try:
+        with open(os.path.join(INTERCOM_RUN, "state.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"state": "idle", "available": False}
+
+
+def intercom_command(word):
+    os.makedirs(INTERCOM_RUN, exist_ok=True)
+    tmp = os.path.join(INTERCOM_RUN, "command.tmp")
+    with open(tmp, "w", encoding="ascii") as f:
+        f.write(word)
+    os.replace(tmp, os.path.join(INTERCOM_RUN, "command"))
+
+
+def _stock_limits(kind):
+    """(largest file, where it waits, most waiting) for one kind of stock import."""
+    if kind == AMAZON_KIND:
+        return AMAZON_UPLOAD_MAX, AMAZON_STAGING, AMAZON_STAGING_MAX
+    return STOCK_UPLOAD_MAX, STOCK_STAGING, STOCK_STAGING_MAX
+
+
+def set_sound_detection(on):
+    if on:
+        with open(SOUND_DETECTION_FILE, "w", encoding="utf-8") as f:
+            f.write("on\n")
+    else:
+        try:
+            os.unlink(SOUND_DETECTION_FILE)
+        except FileNotFoundError:
+            pass
+
+
+def amazon_state():
+    """What the engine is doing, from the voice assistant, and the owner's switch."""
+    try:
+        with open(AMAZON_STATE, encoding="utf-8") as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        state = {}
+    return {
+        "engine": state.get("engine", "off"),
+        "sound": state.get("sound", "off"),
+        "error": state.get("error", ""),
+        "sound_on": os.path.exists(SOUND_DETECTION_FILE),
+    }
+
+
+LOGIN_APPROVAL_FILE = "/opt/persist/login-approval"
+LOGIN_WAIT = biscuit_login_wait.LoginWait()
+
+
+def login_approval_on():
+    return os.path.exists(LOGIN_APPROVAL_FILE)
+
+
+def set_login_approval(on):
+    if on:
+        with open(LOGIN_APPROVAL_FILE, "w", encoding="ascii") as f:
+            f.write("1\n")
+            f.flush()
+            os.fsync(f.fileno())
+    else:
+        try:
+            os.unlink(LOGIN_APPROVAL_FILE)
+        except FileNotFoundError:
+            pass
+
+
 def ha_state():
     """What this Echo offers Home Assistant and Music Assistant, and whether
     each is connected - from the live connections, not a setting."""
@@ -1893,6 +2003,8 @@ def ha_state():
                      "running": bool(music.get("running")),
                      "servers": conns["music_servers"]},
         "btproxy": btproxy_state(),
+        "arbitration": arbitration_state(),
+        "intercom": intercom_state(),
         # An app chosen at setup and not installed yet is not the same as one
         # nobody asked for, and the page says which.
         "pending": pending_state(),
@@ -2480,12 +2592,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, updates_state())
         elif path == "/api/homeassistant":
             self._json(200, ha_state())
+        elif path == "/api/login-approval":
+            self._json(200, {"on": login_approval_on()})
         elif path == "/api/inventory":
             self._json(200, inventory_state())
         elif path == "/api/datetime":
             self._json(200, system.datetime_state())
         elif path == "/api/stock":
-            self._json(200, dict(system.stock_state(), led_used=led_usage()))
+            self._json(200, dict(system.stock_state(), led_used=led_usage(), amazon=amazon_state()))
         elif path == "/api/stock/file":
             # A stock file, to keep a copy of. Only files inside the store, by
             # name; stock_file_path refuses anything else.
@@ -2516,6 +2630,20 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(404, {"error": str(err)})
         else:
             self._send(404, "not found", "text/plain")
+
+    def _signed_in(self, user, addr):
+        token = new_session(user, addr)
+        _LOGGER.info("login ok for %s from %s", user, addr)
+        payload = json.dumps({"ok": True}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header(
+            "Set-Cookie",
+            "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict"
+            % (SESSION_COOKIE, token, SESSION_TTL_S))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
@@ -2548,24 +2676,43 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(403, {"error": shipped_refusal()})
             if verify_password(user, str(body.get("password", ""))):
                 _failures.pop(addr, None)
-                token = new_session(user, addr)
-                _LOGGER.info("login ok for %s from %s", user, addr)
-                payload = json.dumps({"ok": True}).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.send_header(
-                    "Set-Cookie",
-                    "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict"
-                    % (SESSION_COOKIE, token, SESSION_TTL_S))
-                self.end_headers()
-                self.wfile.write(payload)
-                return
+                # Not over the cable: whoever holds that is already at the device,
+                # and it is the way back in if the button ever stops working.
+                if login_approval_on() and not over_usb(self._local(), addr):
+                    try:
+                        wait = LOGIN_WAIT.begin(user, addr)
+                    except OSError as err:
+                        _LOGGER.error("sign-in needs the button: %s", err)
+                        return self._json(503, {"error":
+                                                "This Echo cannot read its button right now. "
+                                                "Sign in over USB or SSH."})
+                    if wait is None:
+                        _LOGGER.warning("login by %s from %s refused: another sign-in is "
+                                        "waiting for the button", user, addr)
+                        return self._json(409, {"error":
+                                                "Another sign-in is already waiting for this Echo's "
+                                                "button. If it is not yours, do not press it: your "
+                                                "password is known to someone else."})
+                    return self._json(202, {"wait": wait, "seconds": LOGIN_WAIT.ttl})
+                return self._signed_in(user, addr)
             note_failure(addr)
             _LOGGER.warning("login failed for %r from %s", user, addr)
             # Deliberately vague: distinguishing "no such user" from "wrong
             # password" tells an attacker which half to keep trying.
             return self._json(401, {"error": "incorrect username or password"})
+
+        if path == "/login/wait":
+            addr = self._client()
+            try:
+                body = self._body()
+                state_, user = LOGIN_WAIT.poll(str(body.get("wait", "")), addr)
+            except Exception:  # noqa: BLE001
+                return self._json(400, {"error": "bad request"})
+            if state_ == "approved":
+                return self._signed_in(user, addr)
+            if state_ == "waiting":
+                return self._json(202, {"waiting": True})
+            return self._json(410, {"error": "Nobody pressed the button in time. Sign in again."})
 
         if not self._authed():
             self._deny()
@@ -2579,7 +2726,8 @@ class Handler(BaseHTTPRequestHandler):
             kind = q.get("kind", [""])[0]
             name = os.path.basename(q.get("name", [""])[0])
             n = int(self.headers.get("Content-Length") or 0)
-            if not name or not kind.isalnum() or n <= 0 or n > STOCK_UPLOAD_MAX:
+            upload_max, staging_root, staging_max = _stock_limits(kind)
+            if not name or not kind.isalnum() or n <= 0 or n > upload_max:
                 # Read what was sent before answering: a refusal written while
                 # the client is still sending reaches it as a broken
                 # connection, not as this message. Past 32 MB, just close.
@@ -2591,21 +2739,21 @@ class Handler(BaseHTTPRequestHandler):
                     left -= len(chunk)
                 if n > 32 << 20:
                     self.close_connection = True
-                return self._json(400, {"error": "a file of at most 2 MB is needed"})
-            d = os.path.join(STOCK_STAGING, kind)
+                return self._json(400, {"error": "a file of at most %d MB is needed" % (upload_max >> 20)})
+            d = os.path.join(staging_root, kind)
             # The first file of a batch clears what any abandoned batch left:
             # the page imports one kind at a time, and a leftover of another
             # kind would otherwise count against the cap with no way to clear it.
             if q.get("first") == ["1"]:
-                shutil.rmtree(STOCK_STAGING, ignore_errors=True)
+                shutil.rmtree(staging_root, ignore_errors=True)
             staged = 0
-            for root, _dirs, files in os.walk(STOCK_STAGING):
+            for root, _dirs, files in os.walk(staging_root):
                 for fn in files:
                     try:
                         staged += os.path.getsize(os.path.join(root, fn))
                     except OSError:
                         pass
-            if staged + n > STOCK_STAGING_MAX:
+            if staged + n > staging_max:
                 left = n
                 while left:
                     chunk = self.rfile.read(min(left, 65536))
@@ -2614,7 +2762,7 @@ class Handler(BaseHTTPRequestHandler):
                     left -= len(chunk)
                 return self._json(400, {"error": "At most %d MB can wait to be imported at once. "
                                                  "Import these, then add the rest."
-                                                 % (STOCK_STAGING_MAX >> 20)})
+                                                 % (staging_max >> 20)})
             os.makedirs(d, exist_ok=True)
             left = n
             with open(os.path.join(d, name), "wb") as f:
@@ -2892,6 +3040,39 @@ class Handler(BaseHTTPRequestHandler):
                               dict(wifi_state(), ok=ok,
                                    **({"message": msg} if ok else {"error": msg})))
 
+        if path == "/api/login-approval":
+            why = self._reauth(body)
+            if why:
+                return self._json(403, {"error": why})
+            try:
+                set_login_approval(bool(body.get("on")))
+            except OSError as err:
+                return self._json(500, {"error": str(err)})
+            return self._json(200, {"on": login_approval_on()})
+
+        if path == "/api/homeassistant" and body.get("action") == "intercom":
+            word = str(body.get("command", ""))
+            target = str(body.get("peer", ""))
+            if word not in INTERCOM_COMMANDS:
+                return self._json(400, {"error": "unknown command"})
+            if word == "call" and target:
+                word = "call:" + target
+            try:
+                intercom_command(word)
+            except OSError as err:
+                return self._json(500, {"error": str(err)})
+            return self._json(200, {"ok": True})
+
+        if path == "/api/homeassistant" and body.get("action") == "arbitration":
+            command = str(body.get("command", ""))
+            if command not in ARBITRATION_COMMANDS:
+                return self._json(400, {"error": "unknown command"})
+            try:
+                arbitration_command(command)
+            except OSError as err:
+                return self._json(500, {"error": str(err)})
+            return self._json(200, {"ok": True})
+
         if path == "/api/bluetooth":
             action = str(body.get("action", ""))
             mac = str(body.get("mac", ""))
@@ -3028,8 +3209,11 @@ class Handler(BaseHTTPRequestHandler):
                     msg = system.stock_remove(kind, body.get("name") or None)
                     if kind == "led" and body.get("name"):
                         msg = "Removed %s." % agent.stock_label(str(body["name"]))
+                elif action == "sound":
+                    set_sound_detection(bool(body.get("on")))
+                    msg = "Sound detection is on." if body.get("on") else "Sound detection is off."
                 elif action == "import":
-                    staging = os.path.join(STOCK_STAGING, kind)
+                    staging = os.path.join(_stock_limits(kind)[1], kind)
                     if not kind.isalnum() or not os.path.isdir(staging):
                         raise ValueError("nothing was uploaded")
                     try:
@@ -3052,7 +3236,8 @@ class Handler(BaseHTTPRequestHandler):
                     msg += " %s went back to %s default." % (
                         ", ".join(LABELS.get(k, k) for k in reset),
                         "its" if len(reset) == 1 else "their")
-            return self._json(200, dict(system.stock_state(), led_used=led_usage(), ok=True, message=msg))
+            return self._json(200, dict(system.stock_state(), led_used=led_usage(), amazon=amazon_state(),
+                                        ok=True, message=msg))
 
         if path == "/api/reset":
             scope = str(body.get("scope", ""))
@@ -3612,6 +3797,23 @@ document.getElementById("f").onsubmit = async (e) => {
     const r = await fetch("/login", {method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(body)});
+    if (r.status === 202) {
+      const wait = (await r.json()).wait;
+      msg.textContent = "Press the action button on this Echo to finish signing in.";
+      for (let i = 0; i < 70; i++) {
+        await new Promise((done) => setTimeout(done, 1000));
+        const w = await fetch("/login/wait", {method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({wait})});
+        if (w.status === 202) continue;
+        if (w.ok) { location.href = "/"; return; }
+        msg.textContent = (await w.json()).error || "Sign in failed.";
+        break;
+      }
+      go.disabled = false;
+      document.getElementById("p").value = "";
+      return;
+    }
     if (r.ok) { location.href = "/"; return; }
     let err = "Sign in failed.";
     try { err = (await r.json()).error || err; } catch (e2) {}
@@ -5545,6 +5747,70 @@ PAGES["homeassistant"] = async function () {
       sub: "Every press and hold reaches Home Assistant as an event, whatever the " +
            "button is set to do.", go: "#/buttons" }));
     blocks.push(group("Voice assistant", boxed(rows)));
+
+    // Several Echos in earshot of one another.
+    const arb = h.arbitration || {}, pairing = arb.pairing || {};
+    const arbSend = async (command, said) => {
+      try {
+        await api("/api/homeassistant", { action: "arbitration", command });
+        if (said) toast(said);
+      } catch (e) { toast(e.message, true); }
+      reloadSoon(1200);
+    };
+    const arbRows = [];
+    const codeLine = pairing.code ? " The other Echo's page has to show the code <b>" + esc(pairing.code) +
+                                    "</b>. If it does not, remove the pairing." : "";
+    if (pairing.state === "waiting" || pairing.state === "exchanging") {
+      arbRows.push(row({ icon: "link", title: "Pairing…",
+        sub: "Press Pair on the other Echo's page now. " + (pairing.seconds_left || 0) + " seconds left." + codeLine,
+        end: btn("Cancel", { cls: "small", onclick: () => arbSend("cancel") }) }));
+    } else if (!arb.paired) {
+      arbRows.push(row({ icon: "link", title: "Only the Echo that hears you best answers",
+        sub: (pairing.state === "failed" ? "<b>" + esc(pairing.message || "Pairing failed.") + "</b> " : "") +
+             "For Echos in earshot of one another. Press Pair here and on the other Echo's page.",
+        end: btn("Pair", { cls: "small", disabled: !!arb.unavailable, onclick: () => arbSend("pair") }) }));
+    } else {
+      const peers = arb.peers || [];
+      arbRows.push(row({ icon: "link", title: "Only the Echo that hears you best answers",
+        sub: (arb.enabled === false ? "Off. Every Echo that hears you answers."
+              : peers.length ? "Working with " + peers.map((p) => esc(p.name)).join(", ") + "."
+                             : "No paired Echo in reach right now, so this one answers by itself.") +
+             (pairing.state === "paired" ? codeLine : ""),
+        end: switchEl(arb.enabled !== false, (on) => arbSend(on ? "on" : "off")) }));
+      arbRows.push(row({ title: "Remove the pairing",
+        sub: "Do this on both Echos.",
+        end: btn("Remove", { cls: "small", onclick: async () => {
+          if (await confirmDialog("Remove the pairing?", "This Echo goes back to answering by itself.",
+                                  "Remove", true)) arbSend("forget", "Pairing removed.");
+        } }) }));
+    }
+    if (arb.paired) {
+      const ic = h.intercom || {}, icPeers = arb.peers || [];
+      const icSend = async (body) => {
+        try { await api("/api/homeassistant", Object.assign({ action: "intercom" }, body)); }
+        catch (e) { toast(e.message, true); }
+        reloadSoon(1000);
+      };
+      const words = { calling: "Calling " + esc(ic.peer || "") + "…",
+                      ringing: esc(ic.peer || "Another Echo") + " is calling. Press this Echo's action button to answer.",
+                      talking: "Talking with " + esc(ic.peer || "") + ". The action button hangs up." };
+      const up = ic.state && ic.state !== "idle";
+      arbRows.push(row({ icon: "mic", title: "Intercom",
+        sub: up ? words[ic.state]
+                : (ic.message ? esc(ic.message) + " " : "") +
+                  (icPeers.length ? "Talk to another paired Echo. It chimes there, and someone answers with its action button."
+                                  : "No paired Echo in reach right now."),
+        end: up ? btn(ic.state === "ringing" ? "Answer" : "Hang up", { cls: "small",
+                      onclick: () => icSend({ command: ic.state === "ringing" ? "answer" : "end" }) })
+                : icPeers.length ? icPeers.map((p) => btn("Call " + p.name, { cls: "small",
+                      onclick: () => icSend({ command: "call", peer: p.id }) }))
+                : null }));
+      arbRows.push(row({ title: "Answer calls by itself",
+        sub: "Another paired Echo could then hear this room with nobody here pressing anything. " +
+             "The ring lights and it chimes first, but no one has to be there to see it.",
+        end: switchEl(!!ic.auto_answer, (on) => icSend({ command: on ? "auto:on" : "auto:off" })) }));
+    }
+    blocks.push(group("Several Echos", boxed(arbRows)));
   }
 
   if (!m.installed) {
@@ -5622,7 +5888,8 @@ PAGES["homeassistant"] = async function () {
   }
 
   pollPage(() => api("/api/homeassistant"),
-    (d) => JSON.stringify([d.voice && [d.voice.peers, d.voice.running, d.voice.installed],
+    (d) => JSON.stringify([d.arbitration,
+                           d.voice && [d.voice.peers, d.voice.running, d.voice.installed],
                            d.sendspin && [d.sendspin.servers, d.sendspin.running, d.sendspin.installed],
                            d.pending && [d.pending.state, d.pending.waiting, d.pending.packages],
                            d.btproxy && [d.btproxy.enabled, d.btproxy.subscribed,
@@ -6353,6 +6620,21 @@ PAGES["security"] = async function () {
   }
 
   if (u.exists) {
+    const approval = await api("/api/login-approval");
+    blocks.push(group("Signing in", boxed([
+      row({ icon: "button", title: "Confirm sign-ins with the action button",
+        sub: "After the password, someone has to press the button on this Echo, so the password " +
+             "alone is not enough from another room. Sign-ins over USB do not ask. If the button " +
+             "stops working, turn this off over USB or SSH.",
+        end: switchEl(!!approval.on, async (on) => {
+          const done = await withPassword(on ? "Confirm sign-ins with the button?" : "Stop asking for the button?",
+            on ? "From the next sign-in on, each one waits a minute for a press of the action button."
+               : "The password alone signs in again.", on ? "Turn on" : "Turn off",
+            (password) => api("/api/login-approval", { on, password }, { seal: true }));
+          if (done) toast(on ? "Sign-ins now ask for the button." : "Sign-ins no longer ask for the button.");
+          reload();
+        }) }),
+    ])));
     blocks.push(group("Account", boxed([
       row({ icon: "user", title: u.username, badge: u.admin ? "Administrator" : null,
             badgeKind: "accent", sub: "Signs in to this page and over SSH." }),
@@ -7764,17 +8046,23 @@ PAGES["storage"] = async function () {
 async function importStock(kind, files) {
   try {
     // They wait in the Echo's memory until checked, so a batch is capped.
-    if (files.reduce((n, f) => n + f.size, 0) > 16 * 1024 * 1024)
-      throw new Error("Choose at most 16 MB of files at a time.");
+    const engine = kind === "amazonwake";    // waits on the system partition instead
+    const most = engine ? 64 : 16, largest = engine ? 24 : 2;
+    if (engine) files = files.filter((f) => f.size > 0);    // the one empty file there is, the Echo makes itself
+    if (files.reduce((n, f) => n + f.size, 0) > most * 1024 * 1024)
+      throw new Error("Choose at most " + most + " MB of files at a time.");
     if (files.length > 1000) throw new Error("Choose at most 1000 files at a time.");
-    const big = files.find((f) => f.size > 2 * 1024 * 1024);
-    if (big) throw new Error(big.name + " is over 2 MB.");
+    const big = files.find((f) => f.size > largest * 1024 * 1024);
+    if (big) throw new Error(big.name + " is over " + largest + " MB.");
     let first = true, sent = 0;
     for (const f of files) {
       // A few hundred files take a while; say how far it has got.
       if (files.length > 20 && ++sent % 25 === 0) toast("Uploading " + sent + " of " + files.length + "…");
+      // The engine's files go by where they sit in the folder, and several share a name. The server
+      // takes flat names, so a/b goes as a__b. The first part of the path is the chosen folder itself.
+      const upload = engine ? (f.webkitRelativePath || f.name).split("/").slice(f.webkitRelativePath ? 1 : 0).join("__") : f.name;
       const r = await fetch("/api/stock/upload?kind=" + encodeURIComponent(kind) + "&name=" +
-                            encodeURIComponent(f.name) + (first ? "&first=1" : ""), { method: "POST", body: f });
+                            encodeURIComponent(upload) + (first ? "&first=1" : ""), { method: "POST", body: f });
       first = false;
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Upload failed.");
     }
@@ -7814,7 +8102,31 @@ PAGES["stock"] = async function () {
   s.profiles.forEach((p) => {
     if (p.id === "fireos5" && !p.imported) return;   // Fire OS 6 devices cannot supply it
     const rows = [row({ title: p.label, badge: STATE[p.state][0], badgeKind: STATE[p.state][1], sub: esc(p.what) })];
-    if (p.imported) {
+    const engineProfile = p.id === "amazonwake";
+    if (engineProfile && p.imported) {
+      const good = p.files.filter((f) => f.state === "ok").length;
+      const hearing = { listening: "In use", starting: "Starting", failed: "Could not start: " + esc(s.amazon.error) };
+      rows.push(row({ title: good + " of " + p.files.length + " files verified",
+        sub: hearing[s.amazon.engine] || "Not in use: no wake word or sensor needs it right now." }));
+      const hasSound = p.files.some((f) => f.name.startsWith("models/AED/") && f.state === "ok");
+      if (hasSound) {
+        rows.push(row({ title: "Sound detection",
+          sub: "Amazon's detector, for alarms, breaking glass, a dog, a baby, snoring, coughing, water and " +
+               "beeping appliances. Reaches Home Assistant as the Sound event. Treat it as a hint and never " +
+               "as your only smoke alarm: stock Fire OS checks each hit in Amazon's cloud, and nothing here can." +
+               (s.amazon.sound === "failed" ? " <b>The detector did not load.</b>" : ""),
+          end: switchEl(s.amazon.sound_on, async (on) => {
+            try { const r = await api("/api/stock", { action: "sound", on }); toast(r.message); }
+            catch (e) { toast(e.message, true); }
+            reload();
+          }, false, "Sound detection") }));
+      }
+      if (p.files.some((f) => f.name.startsWith("whisper/") && f.state === "ok")) {
+        rows.push(row({ title: "Whisper detection",
+          sub: "Scores each request after the wake word. Reaches Home Assistant as the Last request whispered " +
+               "sensor, which an automation can use to answer quietly." }));
+      }
+    } else if (p.imported) {
       p.files.forEach((f) => {
         const a = el('<a class="btn flat" title="Download" href="' + dl(p.id, f.name) + '" download>' + icon("download", 15) + "</a>");
         rows.push(row({ title: f.name.split("/").pop(),
@@ -7824,7 +8136,7 @@ PAGES["stock"] = async function () {
           end: f.state !== "absent" ? a : null }));
       });
     }
-    const picker = filePicker(p.id);
+    const picker = filePicker(p.id, undefined, engineProfile && canPickFolder);
     const acts = [btn(p.imported ? "Import again" : "Import", { cls: "small", onclick: () => picker.click() })];
     if (p.imported && !p.required) {
       acts.push(btn("Remove", { cls: "small destructive", onclick: async () => {
@@ -7841,10 +8153,15 @@ PAGES["stock"] = async function () {
     const where = p.id === "speaker"
       ? "Choose EQ_50.cfg from the backup's assets/speaker folder (an older backup zip did not " +
         "save it), or from Fire OS's system/vendor/etc/audio-algorithms. "
+      : engineProfile
+      ? "Choose the folder biscuit-export-amazon-wake.py made from your Fire OS system image: it is in " +
+        "this project's device folder, and runs on your computer. Any Fire OS build will do. The Echo runs " +
+        "the files before keeping them, and keeps what it had if they do not work. A folder holding only " +
+        "whisper/ adds that model to what is here. "
       : "Choose the files from the backup's folder. ";
     rows.push(row({ title: p.imported ? "Replace from your backup" : "Import from your backup",
-      sub: where + "Each is checked against its known size and " +
-           "SHA-256 before anything is replaced.", end: acts.concat([picker]) }));
+      sub: where + (engineProfile ? "" : "Each is checked against its known size and " +
+           "SHA-256 before anything is replaced."), end: acts.concat([picker]) }));
     blocks.push(group("", boxed(rows)));
   });
 
@@ -8168,9 +8485,14 @@ PAGES["updates"] = async function () {
     bootRows.push(row({ icon: "info", title: "Boot image not checked yet",
       sub: "It is compared with the installed kernel whenever updates are checked." }));
   } else if (rolledBack) {
-    bootRows.push(row({ icon: "info", title: "The previous boot image is in use",
-      sub: "Put back " + ago((boot.last_apply && boot.last_apply.rolled_back || {}).when || u.now, u.now) +
-           ". The installed kernel's image is not in use; install it again when you want it.",
+    const undone = boot.last_apply && boot.last_apply.rolled_back || {};
+    bootRows.push(row({ icon: "info",
+      title: undone.auto ? "A new boot image did not work, so the last good one was put back"
+                         : "The previous boot image is in use",
+      sub: (undone.auto ? "This Echo went back by itself " + ago(undone.when || u.now, u.now) +
+                          (undone.reason ? ": " + esc(undone.reason) + "." : ".")
+                        : "Put back " + ago(undone.when || u.now, u.now) + ".") +
+           " The installed kernel's image is not in use; install it again when you want it.",
       end: btn("Install", { cls: "small", disabled: busy, onclick: () => guarded({ action: "boot" },
         "Install the boot image again?",
         "The image built from the installed kernel is written to both boot slots. Restart afterwards to use it.", "Install") }) }));

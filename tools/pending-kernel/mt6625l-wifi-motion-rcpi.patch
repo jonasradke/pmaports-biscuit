@@ -1,0 +1,62 @@
+diff --git nic/nic_rx.c nic/nic_rx.c
+index a3eec8e..16ad742 100644
+--- nic/nic_rx.c
++++ nic/nic_rx.c
+@@ -1422,6 +1422,18 @@ VOID nicRxProcessDataPacket(IN P_ADAPTER_T prAdapter, IN OUT P_SW_RFB_T prSwRfb)
+ 
+ 	nicRxFillRFB(prAdapter, prSwRfb);
+ 
++	/* BISCUIT: the last data frame's level, for Wi-Fi motion: /proc/net/wlan/rcpi */
++	{
++		extern volatile unsigned char biscuit_rcpi, biscuit_rcpi_kind;
++		extern volatile unsigned int biscuit_rcpi_frames;
++
++		if (!fIsDummy && prSwRfb->u2PacketLen > 14 && prSwRfb->pvHeader) {
++			biscuit_rcpi = prSwRfb->prHifRxHdr->ucRcpi;
++			biscuit_rcpi_kind = ((PUINT_8)prSwRfb->pvHeader)[0] & 1;
++			biscuit_rcpi_frames++;
++		}
++	}
++
+ #if 1				/* Check 1x Pkt */
+ 	if (prSwRfb->u2PacketLen > 14) {
+ 		PUINT_8 pc = (PUINT_8) prSwRfb->pvHeader;
+diff --git os/linux/gl_proc.c os/linux/gl_proc.c
+index 0183440..c0a240d 100644
+--- os/linux/gl_proc.c
++++ os/linux/gl_proc.c
+@@ -1561,6 +1561,25 @@ static const struct proc_ops dtim_ops = {
+ 	.proc_write = dtim_skip_count_write,
+ };
+ 
++
++/* BISCUIT: the last data frame's level, for Wi-Fi motion. Read-only, and no frame content. */
++volatile unsigned char biscuit_rcpi, biscuit_rcpi_kind;
++volatile unsigned int biscuit_rcpi_frames;
++
++static ssize_t procRcpiRead(struct file *filp, char __user *buf, size_t count, loff_t *ppos)
++{
++	char text[64];
++	int len = scnprintf(text, sizeof(text), "RCPI RX0 = %u\nFRAMES = %u\nKIND = %u\n",
++			    biscuit_rcpi, biscuit_rcpi_frames, biscuit_rcpi_kind);
++
++	return simple_read_from_buffer(buf, count, ppos, text, len);
++}
++
++static const struct proc_ops procRcpiOps = {
++	.proc_read = procRcpiRead,
++	.proc_lseek = default_llseek,
++};
++
+ INT_32 procInitFs(VOID)
+ {
+ 	struct proc_dir_entry *prEntry;
+@@ -1579,6 +1598,8 @@ INT_32 procInitFs(VOID)
+ 		pr_err("gprProcRoot == NULL\n");
+ 		return -ENOENT;
+ 	}
++
++	proc_create("rcpi", 0444, gprProcRoot, &procRcpiOps);
+ 	proc_set_user(gprProcRoot, KUIDT_INIT(PROC_UID_SHELL), KGIDT_INIT(PROC_GID_WIFI));
+ 
+ 	prEntry = proc_create(PROC_DBG_LEVEL_NAME, 0664, gprProcRoot, &dbglevel_ops);

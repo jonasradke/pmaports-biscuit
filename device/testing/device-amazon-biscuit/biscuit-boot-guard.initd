@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+
+name="biscuit-boot-guard"
+description="Count the starts of an unproven boot image, and go back if it never works"
+
+# As early as there is a writable root filesystem. A kernel that resets the
+# device a minute in has to be counted before it does, and before anything that
+# might hang: see biscuit-boot-update. Deliberately not after biscuit-persist,
+# which does a lot and whose failure is one of the things being watched for.
+
+depend() {
+	need localmount
+	before biscuit-persist
+}
+
+start() {
+	ebegin "Checking the boot image"
+	/usr/bin/biscuit-boot-update guard >> /var/log/biscuit-boot-guard.log 2>&1
+	# Never the reason a boot stops. A failure here is in the log.
+	eend 0
+}

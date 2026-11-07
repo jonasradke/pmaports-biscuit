@@ -46,7 +46,10 @@ or its affiliates.
 | Crash capture | Yes | Kernel logs survive a crash and reset (ramoops) |
 | Line-in | No | The hardware has none: the jack is output only |
 | Suspend | No | The SoC offers no useful sleep state, and the device must keep listening |
-| Alexa / Amazon services | No | Not part of this project |
+| Several Echos | Yes | Paired Echos agree which one answers a wake word, and can talk to each other over an intercom. Directly between them, encrypted, with no cloud |
+| Amazon's wake word engine | Optional | Not included: you import it from your own Fire OS system image. Any Fire OS build; the Echo tries the files before keeping them. Runs with no network and no privileges, and adds "Alexa, stop", sound detection and, with a model you fetch yourself, whisper detection |
+| Wi-Fi motion | Experimental | A motion sensor from the Wi-Fi level, off by default. Today's driver reports the level coarsely; a better reading needs a kernel change that is written but not yet built |
+| Alexa / Amazon services | No | Not part of this project. Amazon's engine, if you import it, only spots words on the Echo |
 
 ## Known issues
 
@@ -124,7 +127,7 @@ using the feed, or to turn it back on, see
 ## What is not included
 
 Nothing Amazon ships is in this repository, in the packages or in the zips: no
-firmware, no audio tuning, no sounds, no light animations. The backup zip
+firmware, no audio tuning, no sounds, no light animations, no wake word engine. The backup zip
 collects them **from your own Echo**, and the install stores them on the Echo's
 settings partition, where they survive reinstalls. They include the Wi-Fi and
 Bluetooth firmware, the microphone FPGA's bitstream, the speaker correction
@@ -196,6 +199,9 @@ This builds on the work of many people:
 - **The original postmarketOS port:** Ben Westover (2023) and Connor Eliffe,
   whose vendor-kernel port of this device came first.
 - **Base system:** postmarketOS / Nura and pmbootstrap, and Alpine Linux.
+- **Amazon's engine on Linux, and the ideas behind several 1.7 features:**
+  [echo-dot-assist](https://github.com/Gamer92000/echo-dot-assist) (MIT), whose
+  reverse engineering of the engine's interface `biscuit-pryon-helper.c` relies on.
 - **Voice:** the Open Home Foundation's linux-voice-assistant, microWakeWord
   and pymicro-wakeword, TensorFlow Lite, and ESPHome's aioesphomeapi.
 - **Music:** Music Assistant and Sendspin (sendspin-cli, aiosendspin), PyAV and

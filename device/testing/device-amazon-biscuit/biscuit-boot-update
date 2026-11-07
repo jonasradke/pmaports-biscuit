@@ -5,6 +5,8 @@
     biscuit-boot-update build OUT     write the image boot_a should hold
     biscuit-boot-update apply         build, check, write boot_a then boot_b
     biscuit-boot-update rollback      put back what the last apply replaced
+    biscuit-boot-update guard         early in every boot: count an unproven image's starts
+    biscuit-boot-update confirm       later in every boot: self test, prove the image or undo it
 
 WHY THIS EXISTS
 
@@ -43,15 +45,39 @@ UUIDs that match the filesystems this system is running from, an initramfs
 that inflates and holds an init and the firmware, and a size that fits the
 slot. boot_a is written and read back first; boot_b only if that matched. A
 read-back that does not match restores the previous image at once.
+
+IF THE NEW IMAGE DOES NOT WORK
+
+An image is unproven from the moment it is written until a boot from it has
+passed the self test. `guard`, one of the first services of every boot, counts
+those starts; the third start of an image that never passed puts the last proven
+one back and restarts. `confirm` runs the self test, a few minutes into the boot:
+passing proves the image, and failing it puts the last proven one back too.
+
+What gets put back is the whole set a boot proved, not just the image: the two
+halves of the initramfs have to come from one build (the one on the boot
+partition unpacks initramfs-extra from /boot and hands over to it), and an older
+kernel needs its own modules. So a proven boot keeps a copy of all three, and a
+rollback also keeps what it displaced, so that installing that image again later
+gets its other half back.
+
+THE LIMIT: this runs in Linux, so it cannot help a kernel that never reaches the
+root filesystem. That still needs TWRP. Both slots always hold the same image:
+amonet v2.0.0's kaeru boots boot_a whatever the slot metadata says, so a second
+slot is no way out. The boot loops seen on this device so far (r244) did reach
+userspace and were reset about a minute in, which is the case this does catch.
 """
 import hashlib
 import io
 import json
 import os
 import re
+import shutil
 import signal
 import struct
+import subprocess
 import sys
+import tarfile
 import time
 import zlib
 
@@ -70,6 +96,20 @@ FIRMWARE = (
 STATE_DIR = "/var/lib/biscuit"
 PREVIOUS = os.path.join(STATE_DIR, "boot-previous.img")
 RECORD = os.path.join(STATE_DIR, "boot-installed.json")
+# The last set a boot proved, and what a rollback displaced.
+GOOD_DIR = os.path.join(STATE_DIR, "boot-good")
+UNDO_DIR = os.path.join(STATE_DIR, "boot-undo")
+GUARD = os.path.join(STATE_DIR, "boot-guard.json")
+BOOT_EXTRA = "/boot/initramfs-extra"
+MODULES_ROOT = "/lib/modules"
+# Two starts may fail. A power cut or an impatient owner can account for those;
+# a third in a row, before a self test that takes three minutes, is the image.
+MAX_STARTS = 2
+# The r244 kernels ran normally for about a minute before the reset, so an image
+# is not proven until it has outlived that comfortably.
+SELFTEST_FROM_S = 180
+SELFTEST_UNTIL_S = 360
+SELFTEST_POLL_S = 5
 
 
 class Refused(Exception):
@@ -470,7 +510,11 @@ def rollback_info(want_kernel=None):
 
 def status():
     rec = read_record()
-    base = {"last_apply": rec or None}
+    good = good_set() or {}
+    guarded = read_json(GUARD)
+    base = {"last_apply": rec or None,
+            "guard": {"watching": bool(guarded.get("pending")), "starts": guarded.get("starts", 0),
+                      "proven": good.get("sha256")}}
     try:
         slots = boot_slots()
         want, appended = build()
@@ -577,12 +621,321 @@ def finish(image, rec, checked=False):
     return 0
 
 
+def read_json(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    write_file(path, json.dumps(data).encode())
+
+
+def clear_guard():
+    try:
+        os.unlink(GUARD)
+    except FileNotFoundError:
+        pass
+
+
+def good_set():
+    """The proven set's manifest, if the whole set is there."""
+    info = read_json(os.path.join(GOOD_DIR, "manifest.json"))
+    for name in ("boot.img", "initramfs-extra", "modules.tar"):
+        if not os.path.isfile(os.path.join(GOOD_DIR, name)):
+            return None
+    return info if info.get("sha256") else None
+
+
+def uptime():
+    with open("/proc/uptime") as f:
+        return float(f.read().split()[0])
+
+
+def selftest():
+    """What works on this boot. Hardware that a kernel or initramfs can break,
+    not the network: a router being down says nothing about this image."""
+    audio = False
+    try:
+        with open("/proc/asound/cards") as f:
+            audio = "[" in f.read()
+    except OSError:
+        pass
+    return {"wifi": os.path.exists("/sys/class/net/wlan0"),
+            "bluetooth": os.path.exists("/sys/class/bluetooth/hci0"),
+            "audio": audio,
+            "settings_partition": os.path.ismount("/opt")}
+
+
+def modules_dir(release):
+    return os.path.join(os.path.realpath(MODULES_ROOT), release)
+
+
+class BootWritable:
+    """/boot read-write for a moment, as it was left afterwards. It is
+    journal-less ext2, and biscuit-persist keeps it read-only for that reason."""
+
+    def __enter__(self):
+        self.was_ro = None
+        with open("/proc/mounts") as f:
+            for line in f:
+                p = line.split()
+                if p[1] == "/boot":
+                    self.was_ro = "ro" in p[3].split(",")
+        # Unmounted, the file would land in the root filesystem's empty /boot
+        # and the partition the initramfs reads would keep the old one.
+        if self.was_ro is None:
+            raise Refused("/boot is not mounted")
+        if self.was_ro:
+            subprocess.run(["mount", "-o", "remount,rw", "/boot"], check=True)
+        return self
+
+    def __exit__(self, *_exc):
+        os.sync()
+        if self.was_ro:
+            subprocess.run(["mount", "-o", "remount,ro", "/boot"], check=False)
+        return False
+
+
+def replace_extra(source):
+    tmp = BOOT_EXTRA + ".new"
+    with BootWritable():
+        shutil.copyfile(source, tmp)
+        with open(tmp, "r+b") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, BOOT_EXTRA)
+
+
+def snapshot_good(found):
+    """Keep what this boot started from, as the set to go back to. Only while
+    /boot still builds the image in the slot: after an update that has not been
+    restarted into, /boot and the modules already belong to the next image."""
+    have = current()
+    if have is None or not id_ok(have):
+        return False
+    digest = sha(have)
+    rec = read_record()
+    if rec.get("sha256") == digest and rec.get("boot_id") == boot_id():
+        print("not keeping this boot's set: the image in the slot has not been started yet")
+        return False
+    known = good_set()
+    if known and known["sha256"] == digest:
+        return True
+    want, _appended = build()
+    if want != have:
+        print("not keeping this boot's set: /boot has moved on to another image")
+        return False
+    release = os.uname().release
+    source = modules_dir(release)
+    tmp = GOOD_DIR + ".new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    write_file(os.path.join(tmp, "boot.img"), have)
+    shutil.copyfile(BOOT_EXTRA, os.path.join(tmp, "initramfs-extra"))
+    with tarfile.open(os.path.join(tmp, "modules.tar"), "w") as tar:
+        tar.add(source, arcname=release)
+    write_file(os.path.join(tmp, "manifest.json"), json.dumps(
+        {"sha256": digest, "release": release, "kernel": sections(have)[0],
+         "selftest": found, "boot_id": boot_id()}).encode())
+    os.sync()
+    shutil.rmtree(GOOD_DIR, ignore_errors=True)
+    os.replace(tmp, GOOD_DIR)
+    os.sync()
+    print("kept this boot's image, initramfs-extra and modules as the set to go back to")
+    return True
+
+
+def restore_undo():
+    """Give an image that was rolled back its other half again, before it is
+    installed again. Only for that same build: a package update since has written
+    newer ones, and those are what the image being installed now goes with."""
+    meta = read_json(os.path.join(UNDO_DIR, "undo.json"))
+    if not meta:
+        return
+    try:
+        with open(BOOT_IMG, "rb") as f:
+            same = sha(f.read()) == meta.get("boot_img")
+        if same:
+            replace_extra(os.path.join(UNDO_DIR, "initramfs-extra"))
+            kept = os.path.join(UNDO_DIR, "modules")
+            if os.path.isdir(kept):
+                target = modules_dir(meta["release"])
+                shutil.rmtree(target, ignore_errors=True)
+                os.replace(kept, target)
+            os.sync()
+            print("put back the initramfs-extra and modules of the image being installed")
+    finally:
+        shutil.rmtree(UNDO_DIR, ignore_errors=True)
+
+
+def restore_good(reason, auto):
+    """Put the whole proven set back. Everything is prepared and checked first,
+    so the moment the set is inconsistent on disk is as short as it can be."""
+    good = good_set()
+    if not good:
+        raise Refused("no proven boot to go back to")
+    with open(os.path.join(GOOD_DIR, "boot.img"), "rb") as f:
+        image = f.read()
+    if sha(image) != good["sha256"]:
+        raise Refused("the saved image does not match its record")
+    check(image)
+    slots = boot_slots()
+    olds = {s: current(s) for s in slots}
+    if all(o == image for o in olds.values()):
+        print("boot_a already holds the last proven image")
+        clear_guard()
+        rec = read_record()
+        return finish(image, rec, checked=True) if rec.get("damaged") else 0
+    have = olds[slots[0]]
+    swap_modules = have is None or sections(have)[0] != good["kernel"]
+
+    shutil.rmtree(UNDO_DIR, ignore_errors=True)
+    os.makedirs(UNDO_DIR)
+    with open(BOOT_IMG, "rb") as f:
+        displaced = sha(f.read())
+    shutil.copyfile(BOOT_EXTRA, os.path.join(UNDO_DIR, "initramfs-extra"))
+    release = good["release"]
+    target = modules_dir(release)
+    fresh = target + ".restore"
+    if swap_modules:
+        shutil.rmtree(fresh, ignore_errors=True)
+        os.makedirs(fresh)
+        with tarfile.open(os.path.join(GOOD_DIR, "modules.tar")) as tar:
+            tar.extractall(fresh, filter="tar")
+    write_json(os.path.join(UNDO_DIR, "undo.json"), {"boot_img": displaced, "release": release})
+    os.sync()
+
+    held = signal.pthread_sigmask(signal.SIG_BLOCK, HELD)
+    try:
+        replace_extra(os.path.join(GOOD_DIR, "initramfs-extra"))
+        if swap_modules:
+            if os.path.isdir(target):
+                os.replace(target, os.path.join(UNDO_DIR, "modules"))
+            os.replace(os.path.join(fresh, release), target)
+            shutil.rmtree(fresh, ignore_errors=True)
+        try:
+            write_all(slots, image, olds)
+        except Damaged as err:
+            record_damage(image, err)
+            raise
+        except Refused:
+            # Every slot still holds the image it held, so its other half goes back.
+            replace_extra(os.path.join(UNDO_DIR, "initramfs-extra"))
+            if swap_modules and os.path.isdir(os.path.join(UNDO_DIR, "modules")):
+                shutil.rmtree(target, ignore_errors=True)
+                os.replace(os.path.join(UNDO_DIR, "modules"), target)
+            shutil.rmtree(UNDO_DIR, ignore_errors=True)
+            raise
+        clear_guard()
+        rec = read_record()
+        rec["rolled_back"] = {"sha256": sha(image), "when": int(time.time()),
+                              "auto": auto, "reason": reason}
+        return finish(image, rec)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, held)
+
+
+def reboot_now():
+    """From early boot too, where OpenRC is not ready to run a shutdown. All the
+    writes that matter were synced by the time this is called."""
+    os.sync()
+    subprocess.run(["reboot", "-f"], check=False)
+
+
+def auto_rollback(reason):
+    print("rolling back: %s" % reason)
+    rc = restore_good(reason, True)
+    if rc in (0, EXIT_UNRECORDED):
+        reboot_now()
+    return rc
+
+
+def guard():
+    """Early in every boot. An image still unproven gets MAX_STARTS starts."""
+    state = read_json(GUARD)
+    if not state.get("pending"):
+        return 0
+    have = current(boot_slots()[0])
+    if have is None or sha(have) != state.get("sha256"):
+        # Reinstalled from TWRP, say. This is no longer about that image.
+        print("the unproven image is no longer installed; nothing to watch")
+        clear_guard()
+        return 0
+    state["starts"] = int(state.get("starts", 0)) + 1
+    write_json(GUARD, state)
+    os.sync()
+    print("unproven boot image: start %d of %d" % (state["starts"], MAX_STARTS))
+    if state["starts"] <= MAX_STARTS:
+        return 0
+    return auto_rollback("it did not finish starting in %d tries" % MAX_STARTS)
+
+
+def confirm(from_s=None, until_s=None, poll_s=None):
+    """A few minutes into every boot: the self test, then prove or undo."""
+    from_s = SELFTEST_FROM_S if from_s is None else from_s
+    until_s = SELFTEST_UNTIL_S if until_s is None else until_s
+    poll_s = SELFTEST_POLL_S if poll_s is None else poll_s
+    good = good_set() or {}
+    # Only what worked before counts: an Echo whose firmware was never imported
+    # has no Wi-Fi on any kernel, and that is no reason to roll anything back.
+    needed = [k for k, ok in (good.get("selftest") or {}).items() if ok]
+    while uptime() < from_s:
+        time.sleep(poll_s)
+    found = selftest()
+    while uptime() < until_s and not all(found.get(k) for k in needed):
+        time.sleep(poll_s)
+        found = selftest()
+    missing = [k for k in needed if not found.get(k)]
+    # Read only now: an install can happen during those minutes. This boot is
+    # still the old image then, so this test says nothing about the new one.
+    state = read_json(GUARD)
+    if state.get("armed_boot") == boot_id():
+        print("a new image was installed during this boot; it is tested when it starts")
+        return 0
+    pending = bool(state.get("pending"))
+    if pending and missing:
+        return auto_rollback("it failed its self test: %s" % ", ".join(missing))
+    if missing:
+        print("self test: %s did not come up on this boot" % ", ".join(missing))
+        return 0
+    if pending:
+        print("self test passed: the boot image is proven")
+    clear_guard()
+    try:
+        snapshot_good(found)
+    except (OSError, Refused, tarfile.TarError) as err:
+        print("could not keep this boot's set: %s" % err, file=sys.stderr)
+    return 0
+
+
+def arm(image):
+    """Watch the image just written, if there is something to go back to."""
+    good = good_set()
+    if not good or good["sha256"] == sha(image):
+        if not good:
+            print("no proven boot to go back to yet, so this image is not watched")
+        clear_guard()
+        return
+    try:
+        write_json(GUARD, {"pending": True, "starts": 0, "sha256": sha(image),
+                           "when": int(time.time()), "armed_boot": boot_id()})
+        os.sync()
+    except OSError as err:
+        print("could not arm the boot guard: %s" % err, file=sys.stderr)
+
+
 def apply():
     slots = boot_slots()
     image, appended = build()
     cmd = check(image)
     olds = {s: current(s) for s in slots}
     rec = read_record()
+    if not all(o == image for o in olds.values()):
+        restore_undo()
     if all(o == image for o in olds.values()):
         print("boot_a already holds this image")
         # Every slot reads back as this image, which is all finish() needs to
@@ -616,6 +969,7 @@ def apply():
         except Damaged as err:
             record_damage(image, err, attempt)
             raise
+        arm(image)
         return finish(image, attempt)
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, held)
@@ -625,7 +979,13 @@ def rollback():
     slots = boot_slots()
     with open(PREVIOUS, "rb") as f:
         image = f.read()
+    # The image alone is only enough while /boot and the modules still go with
+    # it, so the set a boot proved is preferred whenever it is this image.
+    good = good_set()
+    if good and good["sha256"] == sha(image):
+        return restore_good("put back from the settings page", False)
     check(image)
+    clear_guard()
     olds = {s: current(s) for s in slots}
     if all(o == image for o in olds.values()):
         print("boot_a already holds the previous image")
@@ -664,6 +1024,10 @@ def main(argv):
             return apply()
         if cmd == "rollback":
             return rollback()
+        if cmd == "guard":
+            return guard()
+        if cmd == "confirm":
+            return confirm()
     except Damaged as err:
         print("biscuit-boot-update: DAMAGED: %s" % err, file=sys.stderr)
         return EXIT_DAMAGED

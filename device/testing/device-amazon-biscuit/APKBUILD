@@ -2,7 +2,7 @@
 maintainer="jonasradke <me@jonasradke.com>"
 pkgname=device-amazon-biscuit
 pkgver=6
-pkgrel=310
+pkgrel=311
 # The public release this build is: the name on the release page, the install
 # zip and the settings page. pkgrel is the build and keeps counting, because
 # apk orders upgrades by it and a release name like 1.0 would sort below the
@@ -11,7 +11,7 @@ pkgrel=310
 # given to another build (installer/zip/releases.json).
 # Releases of the jonasradke fork carry a "-jr" suffix, so they can never be
 # mistaken for, or collide with, an upstream release of the same number.
-_release="v1.6-jr"
+_release="v1.7-jr"
 # The Updates page and Home Assistant read the release name of a newer build from
 # here, off the signed feed, before it is installed (feed_release in
 # biscuit-pkgjob.sh).
@@ -239,6 +239,7 @@ source="
 	biscuit-profile-assets.json
 	biscuit-setup-chime.wav
 	biscuit-import-assets
+	biscuit-pryon-helper.bin.gz
 	30-biscuit-firmware.files
 	mdev-persistent-storage
 	50-device-amazon-biscuit-mdev.files
@@ -311,6 +312,14 @@ source="
 	lva-src/qualification_v1.py
 	lva-src/peripheral_transport.py
 	lva-src/btproxy_relay.py
+	lva-src/arbitration.py
+	lva-src/amazon_wake.py
+	lva-src/intercom.py
+	biscuit_crypto.py
+	biscuit_login_wait.py
+	biscuit_wifi_motion.py
+	biscuit-boot-guard.initd
+	biscuit-boot-confirm.initd
 	lva-src/mpv_player.py
 	lva-src/libmpv.py
 	biscuit-va-leds.py
@@ -698,6 +707,15 @@ package() {
 		"$pkgdir"/etc/ssh/sshd_config.d/40-biscuit.conf
 	install -d "$pkgdir"/etc/runlevels/boot
 	ln -sf /etc/init.d/biscuit-persist "$pkgdir"/etc/runlevels/boot/biscuit-persist
+	# A boot image that does not prove itself is rolled back. See biscuit-boot-update.
+	install -Dm755 "$srcdir"/biscuit-boot-guard.initd "$pkgdir"/etc/init.d/biscuit-boot-guard
+	ln -sf /etc/init.d/biscuit-boot-guard "$pkgdir"/etc/runlevels/boot/biscuit-boot-guard
+	install -Dm755 "$srcdir"/biscuit-boot-confirm.initd "$pkgdir"/etc/init.d/biscuit-boot-confirm
+	install -d "$pkgdir"/etc/runlevels/default
+	ln -sf /etc/init.d/biscuit-boot-confirm "$pkgdir"/etc/runlevels/default/biscuit-boot-confirm
+	# The wrapper for Amazon's engine: nothing of Amazon's is in it, and it does
+	# nothing until the owner imports the engine. Unpacked by the post scripts.
+	install -Dm644 "$srcdir"/biscuit-pryon-helper.bin.gz "$pkgdir"/usr/lib/biscuit-pryon/biscuit-pryon-helper.gz
 	# Grow the root filesystem to fill its partition. pmOS resizes the
 	# PARTITION at first boot but the FILESYSTEM resize routinely does not
 	# take on this device - after r231 a 929 MiB partition held a 558 MiB
@@ -1010,6 +1028,11 @@ package() {
 	# service reporting started says the SUPERVISOR is up, not the child.
 	install -Dm644 "$srcdir"/biscuit_services.py \
 		"$pkgdir"/usr/bin/biscuit_services.py
+	# Beside the scripts that import them, the same way.
+	install -Dm644 "$srcdir"/biscuit_login_wait.py \
+		"$pkgdir"/usr/bin/biscuit_login_wait.py
+	install -Dm644 "$srcdir"/biscuit_wifi_motion.py \
+		"$pkgdir"/usr/bin/biscuit_wifi_motion.py
 	# Apps, updates and Home Assistant status for the settings page, which
 	# imports it as `system` - the same way, with the same consequence if it
 	# is ever left out.
@@ -1107,7 +1130,8 @@ package() {
 	# ModuleNotFoundError after biscuit_services.py.
 	for _f in peripheral_api.py entity.py __main__.py satellite.py \
 		qualification_v1.py mpv_player.py peripheral_transport.py \
-		btproxy_relay.py; do
+		btproxy_relay.py arbitration.py amazon_wake.py \
+		intercom.py biscuit_crypto.py; do
 		# abuild flattens sources into $srcdir by BASENAME, so the lva-src/
 		# prefix belongs in source= and must not appear here.
 		install -Dm644 "$srcdir"/$_f \
@@ -1526,7 +1550,7 @@ ce517e42ca7c17ec6dccaa9e1ff7741aa0fe74ef8bfb40198d0c2a02566430f07a4c07d15baaf556
 cba0584c984700c8be668c7c8e42cb492195e3baad1779a1087cac9c2aa0d79880ac8bb2155dc8766bd5a263184badaa339fcd83760c08e5b250a1470935ce9d  biscuit-amp-wait
 9ae3e1c68d51124df1280436ee3325b509738e4251d79c29106d5db995e2af89427694eb6ee7dca0675e01c5e45a223d971bd4a66b6998bc823e4e41f43a0971  biscuit-silence.wav
 03ef53c970e9c9bd8f74dc767052c14dee9c974a7d61805837d12df9954472240a2d5d8ad7163f1e2fa7d146d8b76d457e7984912fe088553b6e92ac870f68e1  biscuit-miccal.py
-7b64119e8c80b9919187313ce8323fc7b392c9e9ae02f657d10d25b1d6072009b7a063dddf50a19727988481d1d76eb3e5715737a7bd1a3e5ff3055dcdda8f86  biscuit-settings.py
+c3678c477e5a9cc51fd45518b16e15eb1f68de611fd14dd345ec9b6a8a5f649360ca2aaa4ea7f83a4d5219a771fa1b4a9ddb9d7c9af5985aeaa85bf7284402fa  biscuit-settings.py
 94f48cebc2fbf393182c323accc9e6f7c56bb14e24d6136b451ec131bf8d04aedbcd95cb103a12c2530b74bd610a69873c0acc60d410ce58fd5b975766b87fe3  biscuit-netcfg.py
 7aa697a7d0ece2dfc104ccc9dc6319cb2e95682f2e330146065c39df31dcddd9161877fdaf5959db71a4f10c550b7dc9e6cf51077faf783053fe7cc005b77330  biscuit-btcast.sh
 2e47f118a090275b376a300afd2d912f70379b08941d9727bc83402d157ee7f6d52f33b32a09e4b753c0150b87e27eddbd9127d1019cc3ab5f035f64a3602882  biscuit-btproxy.py
@@ -1563,17 +1587,18 @@ cf5f4d8aa741c6d35d193761f34765a000f1c5b4c56f32e30a6c609d8a2fd6c5aafa17099a1d54b9
 1f6385167b06eede4834ef72cf1cfabd9097ab9ae7f9d1cd06ea717da693995774d29ce632d88c5cf589604e4c416f87ea11e7d77c6bb18f3c7d73a7cf00138b  biscuit-portal.py
 e59783b0829f5e2e2e055cbbec7d85b865c58208d5b99df21297395f4e59a1d14a1129dd07efb81d5a2f7c554393ec44d1e90b70277fe583dce8589b4e1eda1c  nacl-fast.min.js
 8a0045cec4092992ef98aab5827ea5a82a6bba4c753fd51f092e0424dd112b4b6dab3df2013cf9618547950d233912a30046bfe2e573fbe4de5d28e3ac4a6508  biscuit-apps.json
-bcbc4188cc5549e0f221727b59cc72a77b98e52cf4c80f4cd0b0c56a99ffbe1d08a58b1acf890af2f26b5da43486550622af3555137d8eaa6f92cb0572b9cfab  biscuit-reset.conf
+901eecb7ce2ed66bde4b3639a90e9a21b266773c977a34a4b342926fb00bf1e2e5dd1ade073429a3e4ffcacfc2972032768a8f15939e4d4430214928d02ea217  biscuit-reset.conf
 c1bf032255375a0cfc246d2cb422befb2b231b036e43f4929d006abd37c493ec33dae5673697f90ed4a6a0a58af8ff163a6283b2a2c65c42a5a4a86badb7dd1b  biscuit-pkgjob.sh
-126132ea25d332c34213e11163f9a9589a928f754d70392d8d977c9baba4c27e6fef67cc9bd7e42df6361d15b606b60704e2f6130cc81191dd71b233ac609749  biscuit-boot-update
+04ca442b5d8decedfc80faac1ca1293536942e94728627a9b80c57c76fb98d539e447e0ed12d8e04e0b5cea920a2f1e552c0e0b01541eeb523433fa38973dea9  biscuit-boot-update
 daf9921acb046663b7f6b04f81fc3c8e77900922485e59f4f1473ecc555f4cd542825734c8e262a6616219f03070fbc22ca2095b8059808d6c5b69551a90328a  pair-session.sh
-80f7e76cab618ae6c963a652dc1be35421f1c083ac22317b7be57e7889c4213f8ddd3dde7889a584c6aa56527fecaa5348f3c4f5c9a8900e59e3adbb4e277437  device-amazon-biscuit.post-install
-f827dceeeb5390485803eca341046065186a2b695f760da1dbafc39418d165a63eb0a428f9339e43a5a9d2be26b55870840e649959abe430d1c980e7be96cdf5  device-amazon-biscuit.post-upgrade
+481d08160439638e12cedcd0f382cdeec7f0a2d3f49c947e90659ca062f7beb1bff01b666b6f3e3fc3da4f5b15dbe7260104a19fd370db9987dc5187a10e4f87  device-amazon-biscuit.post-install
+1d0ba7c36b5e16c2ff914c4d7db053c4bab10827f08f2c60f4325ee093cabf6e8f84469a9dfced39ab991b732012589fc33d0b85574c647e76b1fd3e73d6caf0  device-amazon-biscuit.post-upgrade
 902c34ab94a28e90e359f7caf292b2b4dc389aa9ccf698fcc10125acc6be2523c035ef56fdde34a6f240e1532b079fb2d455477831aa5aaf96c9f0ba2ef43520  device-amazon-biscuit.pre-upgrade
 6ea110460e9e8ce5ecf007c16380a441c2bb924eb02a06ecdebf94ba779c1782d677fb3c8503cc59ac70c8f2cf717b078a8109485b7780b059128c4d06d64459  biscuit-ring-priorities.json
-2f0bdcbb13c393d0e1e157ebb2b5fbdc2f8dd9cd15fb266b44fa00dd167692871fb32b2f079e0a2629c6b68008bc3ce7ff9e4c28134f8f6ebcb2deca23a1c112  biscuit-profile-assets.json
+6ecdbf45cb0f5f9ec320c17b1f19fc83db58b845b39599e7e62e22e63499641e59640b316c1d9c1f28ef82c4042d358a93a6141b7d5272092e27836a4d8d2e63  biscuit-profile-assets.json
 25e6690e5f09c73dea2e385f440657d3b41013b9d89524b719e203b7cf3f5ead56a36c71b34fb32f0f6e2d61aa4aabe1c73b7ce252752fe878dfc5075436a08c  biscuit-setup-chime.wav
-169c31234bd6b288dd2385346bd528d7d4cf797d24e6b547122233f7986686dd516068a52a98819e1f9947ebec87b17e3252563d9eeaa5e8eef0af460004f716  biscuit-import-assets
+aa87dddf9673409d906de75d5fdc2725ffced8c5aea22509794c5154019b8172c1057335b5390a791fa33b4dab900c54681e6d6cc8ad80c129cb42aa0188d259  biscuit-import-assets
+46ac1bd5d01611b59fec6ca3d01e06ae03f199d9b8a2bd14b3839234daf241c98e4d2db0f499e12e63dc4c68e41aab8dcfd9e5ebc820f74a9c521dac910a2750  biscuit-pryon-helper.bin.gz
 f74283c61d81699882ee198abcc174875425e7cffacbb67d99a8f11bfc5eaf24c200c7777019ab5c0b0a7939ceb43f6d9c2a27acecc107e67e386d4eb56ada17  30-biscuit-firmware.files
 3d6531ac1f42631f494e8d4bfa89fe09e09430cea0bda9e9dd81cca88121e4c4d883e4bdecfb6a39cdbb53992044a782abf44368569280bbfebe69d59cc27aa8  mdev-persistent-storage
 95847bd4c55dc30cfd2d3e3bd390c9d307cab2ee9e63fbd111496ba16a5b9217f5d597060b77d01023e1a5b596c8814e54799d74b7e936e19a0fcb11c14b98dc  50-device-amazon-biscuit-mdev.files
@@ -1639,20 +1664,28 @@ a856b17731c50bb3646c8a89e96f61301cf5a321dec669f9bf37c39cd9e30070e97ced8f45e87200
 a61d0c4cbebfd708dca10d6d47772607b85c29eeb06db46607a46586ee9bcb32315dcb3d093ecc64266f69acb7694f28af17682b54549ca25166ae782e6ce437  biscuit-lva-device-master-volume.patch.txt
 5e800dc640acaa1e370f2e2a2ade620dd25ff9935fa66089b8cc361633e654a8e18693c1ee161239425665c42364c4c2483b6af9094d8ed5d0c3541c8d612978  biscuit-lva-entity-master-volume.patch.txt
 afa8b6f7510f2e262320228b04ea6b0f28819c51ce9aa18ba1565fd1e7263ff71e6d262349a869f8d0515fcd36445d4cea2230d74a26ead467e7425371e22222  biscuit-lva-quiet-broadcast-warning.patch.txt
-0fcf40fa5691d644f214b9f351c26dc75ed0c9310ae63c4ce50ccb74e74e3e709d35faf78be8695b626ab4cf25ce65d4867e883a8fc4f2b68c78d379daa62c67  peripheral_api.py
-92319d6638eccd5468ac57a9c4c9d3aa6d606ddb8848e452cab53401facf8d6be4d7714657f8e1fad52f5abf617d4084d412dbf740cf996518dc64084c54b24f  entity.py
-5fd1155dcee980d053e8ad1558bb17d8285ffee0dd3a6c36d7543161a910550d022fc671be9a89e78d82116cede7a4f853741ca45dc223d19bbd43ff2a8716aa  __main__.py
-f35dce2f9679d7e0c12597e68abc39daa6a22479d1ac2d7d02b79abd663cc657054bd17765bb0f166bba11f41f10a6e844686a8cad7a42568c053c14690eb1e8  satellite.py
+f6d76a7163167a5c321e86435e8df8edb71409aef97847bb5dad76b001ce287be00f83051bf3d62a78ab501b2adc760eec3fd7bd7c7e1f3f661a34dd7051c314  peripheral_api.py
+de1c722db698885e2e7970e085feb7262a63289c8af2764f83dfe618cb8b838fdcd18c4a894faa5f568f659c7a64d7bb8c2ee287130dace78a410d31761b8416  entity.py
+744a0ec98f93a9563f75248dc2268a724e72839a7f226d6faa2f66b28042279bb36ab457347ca71393475626c6d8f92a3e5f4b3abb836afe0abdebd30f8fc934  __main__.py
+69eb06a71973d9551e5438ddac23cc547c8cef1523919c09bb74a5476b650a5ce74296165db38267077e1454706090361a25dd83ed5caf878876517f227dfc00  satellite.py
 b961e8a87e039d249446e448c925abb8cdf31ca80749c619f7a1cbeedeb891cc39e7d86cccb462046235af49e6a6b23a98ca96aa746c2d522e386fb7a31c7374  qualification_v1.py
 1e55f04109efe24b62d09da47139747956e2802d9c95b6dec5459d275b94ac8f452f26beef550dbcf577630c2d2d38eb0b153bbedbe82e96816c92ba42873ae7  peripheral_transport.py
 28d437f19a5f6c5b6eacf58e032a186fcd32e1896a2b9aeb8bb3453ae533e4c80b0dd12b02ba65e035460d6c73c7997250219b0c2fb608e3f06ff99ca0cc3db2  btproxy_relay.py
+8bbc9f5f0b5e6f1fa8e3fb55b3ac4ffbe8c387dd7154857e8870c97add35eccce75d19e2b466bb77e959680307312837fd14cf9fc05fdebe559eb37c4c37ad72  arbitration.py
+cb725d7c9feb8f2db422d394584707cf9280557f230a6382a29b897aa53b91983d49a02aef7fed4e04c0f905b942c8e2031efb4894f0786c5f155e4aee0d5d42  amazon_wake.py
+d341e7a95d8ba9706c4ac4cfbb1e63a5e7e59450d0a746278257c8a51c8b8aaad956d4595e3abdb5f9b6b162dceb3c2509c5082614ec76003e24147be8b8358f  intercom.py
+b1b1795aa8180a30e31a0cb926c1081cc3b720f2c44b1cb921ae2aba3ab065d1b9482753040293f7c244fd165c1cc34f579458f59c81dda560576901bc42c797  biscuit_crypto.py
+f558f2e9ab77726b800988d5f2c6cb94cf9794c63a39a5500dcb8940eeac21b8076a3c09cf3d488b1be1a66eca369751b84da7bae0f6c62334ca917b4986d29a  biscuit_login_wait.py
+fbdc5cff2d5bb209b82a6fc4c59f6396e7ee23db1f0a44a23dc4846286a48135467b8a75f10f1cbc2b3b14582fd4fd16633e8a755e15ef211d1b82c74f850517  biscuit_wifi_motion.py
+efde55b0a0b9e9dfe38b4a34c30d4b07de00b766d4a5b205f2b26b7e1d6f38a5f67fe66587ff3397ee20ecba3f00b89a5baf35d53adb2b1379cc24ccaecae05a  biscuit-boot-guard.initd
+8532142ce36ec495e489b77e8db5dd2d4534d135932a529857515cc7f473e8b28efc889b9154088e944aff7523994f173e1d86d6cd2dc6a399b0e63a475665ce  biscuit-boot-confirm.initd
 f80fd53f8d6f4cc136b75f459fc3b9663d84415ef1f184e5614e4e0c07cc120c512f846950cfb5608932c1741a3d0fe56dd9fc1a8134a9e53c79bb635cfe19fa  mpv_player.py
 94471a93ac074d05325300b53efb41239b1bb41a0de5e0707390fa87bf3ee71f3aade88c841d89ea739c8c438b4c1c92656e3cf1fdcbabf5ae4f17f1d4a0ab17  libmpv.py
-1c22b4715c1c3ec2dca5bcc49f6a1eb78dff0d2733d7f20dac45b202acfffb803cf4422557409690d1c945bf200f453ecb74b5bcdb37d78b01159165391fe1f1  biscuit-va-leds.py
+0fe711cb40bc97fdb03e0c189392b0b42d7369253a4b3fe42ac91736c09e3b677f95ba7e0bc2c37107653667b6a2e6f1ea7d884575f772c6c52869c35bf4aeb2  biscuit-va-leds.py
 56b2e83867d1c9002392c8f2341c0ce67257aeff9619ec282abc7d7e5317b7e9f95043ab0a0b6cc789488889866b03583c9e85c0407f4559641188d713f93f22  biscuit-ring-fx.py
 ba08f5eabaa4ffcba25e7123c4def7ce3e6c574c9dffdefb31c88f54557ead9ffd8190c6fb28c60a6ea23f7bad89b626bc17af50cf3fe54d786cfe4ba6701910  biscuit_ring_config.py
 2865dc7fe8a445d15a7e8229df17a0be393cfbb42014fafd6cadd62d15b7407b64b89832d98d25dd139710e84577499c2ab2d23ce74e5c2baa5433059c465a9e  biscuit_services.py
-d52ebdb208d3dc3b08f115f28c693e78587a75ddcc52b14ee1d6492cafb84a1fc65d2275de2847faa0af355fc7b7158836d053a539f34efc735d882009c64b36  biscuit_system.py
+4928cb8dfee0f7a4c98c89be0b1dba578f7457cfe18f67685630a0f741f76404f1ec24b26f10556c462dfa38accdaf5bdcb3fe3e1eefabd5b54302aabab8237b  biscuit_system.py
 4ae58e73084c143f71c98fee94728cadc6150aaa648c897738bdf984bf66b22db6775dadcfc858463092692d33f73de88b4fa9eb0e5c04c6876f860ba28c12ae  biscuit-voice-assistant.initd
 7ab07f402e561ce4859c4a9415721570250a8a08fa931aa29ec08c48cfe9ef830623036abc8a0cefb967cab57a5856f9b39d808790b61b03829f3569a15dc4ce  biscuit-voice-assistant-wait.sh
 d76f7aa7a6accc715af222416a1f3eb31f25ba28a9a32394f96e7f041e2fffc01861f162b063ee42dce5500f35e4ef7510717b14e266361a740c0d08ddd376fb  biscuit-va-leds.initd

@@ -70,6 +70,7 @@ import threading
 import time
 import biscuit_services as services
 import biscuit_system as pkg_system
+import biscuit_wifi_motion
 import sys
 
 CONTROL_FIFO = "/run/biscuit-ring/control"
@@ -761,6 +762,7 @@ def stage_stock(src, dst, loop=False):
 _CY_ON_BLUE = [[0, 255, 255], [0, 0, 255]]      # cyan on blue, the voice palette
 _LTBLUE     = [[0, 153, 255], [0, 17, 51]]      # #0099FF on #001133
 _BLUE_DIM   = [[0, 0, 255], [0, 0, 17]]         # #0000FF on #000011
+_GREEN_ON_DIM = [[0, 255, 80], [0, 32, 10]]
 
 DEFAULT_MAP = {
     # The three activities where the device is listening TO SOMEONE all point
@@ -778,6 +780,16 @@ DEFAULT_MAP = {
     "pipeline_error":     {"effect": "Breathe",         "colours": [[255, 17, 0], [0, 0, 0]], "lifetime": 2},
     "timer_ticking":      {"effect": "Breathe",         "colours": [[0, 153, 255], [0, 0, 0]]},
     "timer_ringing":      {"effect": "Blink",           "colours": _LTBLUE},
+
+    # The intercom has no stock original. Green, so a call never reads as the assistant
+    # listening: moving while it waits, blinking to be answered, steady while the
+    # microphone is open to the other room.
+    "intercom_calling":   {"effect": "Highlight Orbit", "colours": _GREEN_ON_DIM},
+    "intercom_ringing":   {"effect": "Blink",           "colours": _GREEN_ON_DIM},
+    "intercom_talking":   {"effect": "Solid",           "colours": [[0, 255, 80]]},
+    # A sign-in on the settings page waits for a press of the action button. No lifetime:
+    # watch_login_wait ends it when the wait ends.
+    "signin_wait":        {"effect": "Breathe",         "colours": [[255, 170, 0], [0, 0, 0]]},
 
     # No lifetime: it loops until zz-boot-done retires it, because "still
     # booting" ends at a moment only that script knows.
@@ -1641,6 +1653,7 @@ def save_miccal_mode(label, restart=True):
 PIPELINE_ACTIVITIES = {
     "wake_word_detected", "listening", "stt_text", "thinking", "tts_speaking",
     "tts_finished", "pipeline_error", "timer_ticking", "timer_ringing",
+    "intercom_calling", "intercom_ringing", "intercom_talking",
 }
 IDLE_EVENTS = {"idle", "disconnected"}
 
@@ -1732,6 +1745,34 @@ def btproxy_active():
 
 def set_btproxy_active(on):
     return _set_btproxy_key("BTPROXY_ACTIVE", on)
+
+
+INTERCOM_ACTIVE = "/run/biscuit-intercom/active"
+INTERCOM_COMMAND = "/run/biscuit-intercom/command"
+SOUND_DETECTION_FILE = "/opt/persist/sound-detection"
+AMAZON_SOUND_MODEL = "/var/lib/biscuit-amazon/amazonwake/models/AED/pryon.manifest"
+
+
+def sound_detection_registrations():
+    """Only with Amazon's detector imported. Without it there is no such thing."""
+    if not os.path.exists(AMAZON_SOUND_MODEL):
+        return []
+    return [_switch("Sound detection", "sound_detection", "mdi:ear-hearing",
+                    os.path.exists(SOUND_DETECTION_FILE))]
+
+
+def set_sound_detection(on):
+    try:
+        if on:
+            with open(SOUND_DETECTION_FILE, "w", encoding="utf-8") as f:
+                f.write("on\n")
+        else:
+            os.unlink(SOUND_DETECTION_FILE)
+    except FileNotFoundError:
+        pass
+    except OSError as err:
+        _LOGGER.warning("could not set sound detection: %s", err)
+    _LOGGER.info("sound detection -> %s", "on" if on else "off")
 
 
 def btproxy_enabled():
@@ -2125,6 +2166,9 @@ def sendspin_control(word):
         s.close()
 
 
+LOGIN_WAIT_MARK = "/run/biscuit-settings/login-wait"
+
+
 def media_control(word):
     """toggle, stop, next or previous - to whatever is playing.
 
@@ -2159,6 +2203,21 @@ async def fire_gesture(ws, gesture):
     local action is "Nothing", and doing it first means Home Assistant sees the
     press even if the local action fails.
     """
+    # The press that approves a sign-in on the settings page is not a gesture.
+    if os.path.exists(LOGIN_WAIT_MARK):
+        _LOGGER.info("action button: %s press belongs to a sign-in", gesture)
+        return
+    # While a call rings or is up, a press answers it or hangs up.
+    if os.path.exists(INTERCOM_ACTIVE):
+        _LOGGER.info("action button: %s press belongs to the intercom", gesture)
+        try:
+            tmp = INTERCOM_COMMAND + ".new"
+            with open(tmp, "w", encoding="ascii") as f:
+                f.write("button")
+            os.replace(tmp, INTERCOM_COMMAND)
+        except OSError as err:
+            _LOGGER.warning("could not reach the intercom: %s", err)
+        return
     _LOGGER.info("action button: %s press", gesture)
     try:
         await ws.send(json.dumps({"command": "button_%s_press" % gesture}))
@@ -2226,6 +2285,58 @@ def als_path():
 
 def read_lux():
     return ring_config.lux()
+
+
+async def watch_login_wait(state):
+    """A sign-in waits for a press of the action button: show it, whatever else the ring
+    is doing, and muted too, because a muted Echo can still approve. Process-scoped, as a
+    sign-in does not depend on the assistant being connected."""
+    waiting = False
+    while True:
+        try:
+            now_waiting = os.path.exists(LOGIN_WAIT_MARK)
+            if now_waiting != waiting:
+                waiting = now_waiting
+                if waiting:
+                    spec = state.map.get("signin_wait")
+                    anim = resolve_spec(spec, as_name="act_signin_wait") if spec else None
+                    if anim:
+                        state._play(anim, spec.get("lifetime"))
+                elif state.muted:
+                    state._play(state.mute_animation())
+                else:
+                    state._clear()
+                    state.apply_ha()
+        except Exception as err:  # noqa: BLE001 - a light must not stop the agent
+            _LOGGER.debug("sign-in light: %s", err)
+        await asyncio.sleep(0.3)
+
+
+async def watch_wifi_motion(ws):
+    """Motion from the Wi-Fi level, while the owner has it on. A short file read each
+    step, and a message only when the state changes."""
+    motion = None
+    last = None
+    while True:
+        conf = biscuit_wifi_motion.load()
+        if not conf["on"]:
+            motion = None
+            last = None
+            await asyncio.sleep(5.0)
+            continue
+        if motion is None:
+            motion = biscuit_wifi_motion.Motion()
+        motion.configure(conf["sensitivity"])
+        moving = motion.step()
+        if moving != last:
+            last = moving
+            try:
+                await ws.send(json.dumps({"command": "binary_sensor_state", "data": {
+                    "object_id": "wifi_motion_detected", "value": moving}}))
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("could not publish wifi motion: %s", err)
+                return
+        await asyncio.sleep(motion.delay)
 
 
 async def watch_ambient_light(ws):
@@ -3406,6 +3517,13 @@ class Ring:
                 # on the window the on just opened.
                 self.jobs.submit(start_pairing if bool(d.get("state")) else stop_pairing)
                 return
+            if d.get("object_id") == "sound_detection":
+                set_sound_detection(bool(d.get("state")))
+                return
+            if d.get("object_id") == "wifi_motion":
+                biscuit_wifi_motion.save(on=bool(d.get("state")))
+                _LOGGER.info("wifi motion -> %s", "on" if d.get("state") else "off")
+                return
             if d.get("object_id") == "btproxy_active":
                 on = bool(d.get("state"))
                 set_btproxy_active(on)
@@ -3432,6 +3550,9 @@ class Ring:
         if name == "number_command":
             d = data or {}
             self.sync.note_command(d.get("object_id"), d.get("value"))
+            if d.get("object_id") == "wifi_motion_sensitivity":
+                biscuit_wifi_motion.save(sensitivity=int(float(d.get("value", 5))))
+                return
             if d.get("object_id") in ("direction_state", "direction_mode"):
                 want = str(d.get("value", ""))
                 action = "state" if d["object_id"] == "direction_state" else "mode"
@@ -3642,6 +3763,11 @@ class Ring:
             self._duck_async(self.ducker.duck)
         elif name in ("tts_finished", "pipeline_error"):
             self._restore_later()
+        elif name == "stop_requested":
+            # "Stop" after the wake word. No reply is coming to wait for, so the
+            # music comes back up at once, paused. dbus-send blocks, so not here.
+            self._restore_later()
+            threading.Thread(target=media_control, args=("pause",), daemon=True).start()
 
     # How long the music stays down after the assistant says it has finished.
     #
@@ -3833,6 +3959,12 @@ def build_registrations():
         # hardware (measured: downloads 0.38 s -> 0.77 s), so this is off by
         # default and worth being able to turn off from the sofa.
         _switch("Bluetooth proxy", "btproxy", "mdi:bluetooth-audio", btproxy_enabled()),
+        *sound_detection_registrations(),
+        _switch("Wi-Fi motion (experimental)", "wifi_motion", "mdi:motion-sensor",
+                biscuit_wifi_motion.load()["on"], entity_category="config"),
+        _number("Wi-Fi motion sensitivity", "wifi_motion_sensitivity", "mdi:signal-variant",
+                biscuit_wifi_motion.SENSITIVITY_MIN, biscuit_wifi_motion.SENSITIVITY_MAX,
+                biscuit_wifi_motion.load()["sensitivity"], step=1.0, entity_category="config"),
         # Separate from the proxy switch because it is a separate trade:
         # broadcast sensors need only the proxy, while letting Home Assistant
         # connect OUT pauses scanning for as long as a connection is open.
@@ -3923,6 +4055,10 @@ def build_registrations():
             "name": "Microphone processing fallback", "object_id": "mic_profile_degraded",
             "accuracy_decimals": 0, "icon": "mdi:microphone-question",
             "entity_category": "diagnostic"}},
+        # Unknown while it is off: no reading is not the same as nobody there.
+        {"command": "register_binary_sensor", "data": {
+            "name": "Wi-Fi motion", "object_id": "wifi_motion_detected",
+            "device_class": "motion", "icon": "mdi:motion-sensor"}},
         # Published by biscuit-audio; unknown until it does.
         {"command": "register_binary_sensor", "data": {
             "name": "Headphones", "object_id": "headphones",
@@ -4282,6 +4418,7 @@ async def run():
     # tts_finished or pipeline_error that would lift it - so a watchdog created
     # inside the loop was being cancelled at the one moment it was needed.
     duck_task = asyncio.create_task(watch_duck_timeout(state))
+    login_task = asyncio.create_task(watch_login_wait(state))
     build_warned = False
     while True:
         try:
@@ -4342,6 +4479,7 @@ async def run():
                 tasks = [
                     asyncio.create_task(watch_hardware_mute(ws, state)),
                     asyncio.create_task(watch_ambient_light(ws)),
+                    asyncio.create_task(watch_wifi_motion(ws)),
                     asyncio.create_task(watch_action_button(ws)),
                     asyncio.create_task(watch_device_volume(ws, state)),
                     asyncio.create_task(watch_ring_config(ws, state)),

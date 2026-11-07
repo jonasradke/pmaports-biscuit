@@ -30,6 +30,7 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     ListEntitiesSelectResponse,
     ListEntitiesSensorResponse,
     ListEntitiesSwitchResponse,
+    ListEntitiesTextSensorResponse,
     MediaPlayerCommandRequest,
     MediaPlayerStateResponse,
     NumberCommandRequest,
@@ -40,6 +41,7 @@ from aioesphomeapi.api_pb2 import (  # type: ignore[attr-defined]
     SubscribeHomeAssistantStatesRequest,
     SwitchCommandRequest,
     SwitchStateResponse,
+    TextSensorStateResponse,
     ListEntitiesUpdateResponse,
     UpdateCommandRequest,
     UpdateStateResponse,
@@ -1020,6 +1022,53 @@ class PeripheralSensorEntity(ESPHomeEntity):
         )
 
 
+class TextSensorEntity(ESPHomeEntity):
+    """A read-only string. BISCUIT.
+
+    With device_class "timestamp" Home Assistant reads it as a point in time, which
+    a dashboard can count down to and an automation can trigger on. None is unknown.
+    """
+
+    def __init__(
+        self,
+        server: APIServer,
+        key: int,
+        name: str,
+        object_id: str,
+        icon: str = "",
+        device_class: str = "",
+    ) -> None:
+        ESPHomeEntity.__init__(self, server)
+        self.key = key
+        self.name = name
+        self.object_id = object_id
+        self.icon = icon
+        self.device_class = device_class
+        self._state: Optional[str] = None
+
+    def update_state(self, value: Optional[str]) -> None:
+        self._state = value
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesTextSensorResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                icon=self.icon,
+                device_class=self.device_class,
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest):
+            yield self._get_state_message()
+
+    def _get_state_message(self) -> TextSensorStateResponse:
+        return TextSensorStateResponse(
+            key=self.key,
+            state=self._state or "",
+            missing_state=self._state is None,
+        )
+
+
 class PeripheralBinarySensorEntity(ESPHomeEntity):
     """A read-only on/off state published by a peripheral. BISCUIT addition.
 
@@ -1187,6 +1236,26 @@ class ButtonEventSensorEntity(ESPHomeEntity):
             key=self.key,
             event_type=self._current_event or "",
         )
+
+
+class SoundEventEntity(ButtonEventSensorEntity):
+    """What the sound detector heard, as an event. BISCUIT."""
+
+    def __init__(self, server, key: int, name: str, object_id: str, event_types) -> None:
+        super().__init__(server, key, name, object_id)
+        self.event_types = list(event_types)
+
+    def handle_message(self, msg: message.Message) -> Iterable[message.Message]:
+        if isinstance(msg, ListEntitiesRequest):
+            yield ListEntitiesEventResponse(
+                object_id=self.object_id,
+                key=self.key,
+                name=self.name,
+                icon="mdi:ear-hearing",
+                event_types=self.event_types,
+            )
+        elif isinstance(msg, SubscribeHomeAssistantStatesRequest) and self._current_event:
+            yield self._get_state_message()
 
 
 # Backward compatibility export aliases

@@ -21,6 +21,8 @@ are no backports.
 | Setup hotspot `biscuit-XXXX`, `192.168.4.1:80` | The setup page | **Open Wi-Fi network**, plain HTTP. Secrets typed into the page are encrypted in the browser (see below) |
 | Your network, port 8080 | The settings page | Your account's password; plain HTTP, no TLS. The port can be changed on the settings page. The shipped `user` account is refused here except over USB (see below) |
 | Your network, port 22 | SSH | Your account's password or keys |
+| Your network, UDP port 6055 | Wake word arbitration, only once paired with another Echo | Frames authenticated with the key the two Echos share. Pairing compares a code on both pages |
+| Your network, UDP port 6056 | Intercom, only once paired with another Echo | Every frame encrypted with ChaCha20-Poly1305 under a key derived from the same shared key |
 | Your network, port 6053 | Voice assistant (ESPHome API), only if the voice app is installed | None: the plain ESPHome API with no encryption key, like an ESPHome device set up without one. Anything that can reach the Echo's Wi-Fi address can connect |
 | Your network, port 6054 | Bluetooth proxy (ESPHome API), only without the voice assistant; with it, the proxy listens on loopback and is reached through port 6053. **Off by default**; switched on in the settings page's Home Assistant section | As above |
 | USB, if you switch on network mode | SSH and the settings page over the cable | As above |
@@ -156,8 +158,33 @@ The device also makes these outgoing connections on its own:
 The voice assistant only sends audio to Home Assistant after the wake word is
 heard on the device.
 
+## Amazon's wake word engine
+
+Only if you import it. It is 20 MB of closed code from Amazon that nobody here can
+audit, and it hears the microphone. So it does not run in the voice assistant.
+`biscuit-pryon-helper` starts it with its own empty network namespace, as `nobody`,
+with no new privileges, and it can reach only two pipes. It can still read what any
+user can read on the Echo's filesystem, but it has no way to send it anywhere.
+Removing it on the settings page deletes it.
+
+Fire OS builds differ, so these files are not checked against a list of hashes:
+the Echo checks what each must be, then runs them the same way, to see that they
+work. Anyone signed in to the settings page can therefore have the Echo run a
+program of their choosing, under those same limits. They can already do more than
+that from there, as that account is the Echo's administrator. The hashes of what
+was imported are kept, so a file that changes afterwards shows as a problem.
+
+## The intercom
+
+A paired Echo can ask to open another's microphone. By default someone must press
+that Echo's action button first. **Answer calls by itself** removes that step, so
+anyone with control of the other paired Echo can hear the room. The ring and a
+chime show it, but only to someone there to notice. It is off unless you turn it
+on. A muted Echo sends nothing during a call.
+
 ## Firmware and imported files
 
 The Echo's firmware, audio tuning, sounds and animations are copied from the
 owner's own Echo by the backup zip and never downloaded. The installer and the
-packages check imported files against known SHA-256 hashes before using them.
+packages check imported files against known SHA-256 hashes before using them, apart
+from Amazon's engine, described above.

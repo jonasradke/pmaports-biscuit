@@ -1726,6 +1726,14 @@ PROFILE_INFO = {
     # Not shipped: it is Amazon's file. Any generation supplies it (EQ_50.cfg,
     # EQ_60.cfg and EQ_70.cfg are the same bytes), and biscuit-dsp reads it
     # straight from the store.
+    # Not shipped either, and the one thing here that RUNS Amazon's code, so it
+    # says so. Only ever on the owner's choice: importing offers a wake word.
+    "amazonwake": ("Amazon's wake word engine", "Amazon's own engine for \"Alexa\" and \"Alexa, stop\", "
+                   "and its sound detector. After importing, choose \"Alexa (Amazon engine)\" as the wake "
+                   "word in Home Assistant. It runs Amazon's code on this Echo, kept apart with no network "
+                   "and no privileges, and costs about 30% of one core and 24 MB of memory while in use. "
+                   "Takes 24 MB on the system partition, so a reflash means importing it again: "
+                   "the settings store, the one place a reflash keeps, has 4 MB free.", False),
     "speaker": ("Speaker correction curve", "Amazon's tuning for this speaker (EQ_50.cfg from "
                 "the backup's audio-algorithms folder), used by the Stock and Custom "
                 "equaliser. Without it the speaker plays flat.", False),
@@ -1733,8 +1741,19 @@ PROFILE_INFO = {
 # What removing a profile does to the device, said when it is removed.
 PROFILE_REMOVED = {
     "speaker": "Removed. The speaker plays flat until the curve is imported again.",
+    "amazonwake": "Removed. Choose another wake word in Home Assistant; this one is gone after a restart.",
 }
 DSP_CONTROL = "/run/biscuit-dsp/control"
+
+
+def _restart_voice_assistant():
+    """It decides what it offers as a wake word when it starts. In the background:
+    this answers a page that should not wait for it."""
+    try:
+        subprocess.Popen(["rc-service", "biscuit-voice-assistant", "restart"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
 
 
 def _reload_dsp():
@@ -1771,9 +1790,22 @@ def _digest(path):
 def _asset_profiles():
     try:
         with open(ASSET_MANIFEST, encoding="utf-8") as f:
-            return json.load(f).get("profiles", {})
+            profiles = json.load(f).get("profiles", {})
     except (OSError, ValueError):
         return {}
+    # The owner's build of Amazon's engine lists its own files.
+    for pid, spec in profiles.items():
+        if spec.get("store"):
+            try:
+                with open(os.path.join(spec["store"], pid, "build.json"), encoding="utf-8") as f:
+                    spec["files"] = json.load(f)["files"]
+            except (OSError, ValueError, KeyError):
+                pass
+    return profiles
+
+
+def _store_of(spec):
+    return spec.get("store") or ASSET_STORE
 
 
 def stock_state():
@@ -1782,7 +1814,7 @@ def stock_state():
         label, what, required = PROFILE_INFO.get(pid, (pid, "", False))
         files = []
         for item in spec.get("files", []):
-            stored = os.path.join(ASSET_STORE, pid, item["name"])
+            stored = os.path.join(_store_of(spec), pid, item["name"])
             variants = item.get("variants") or [item]
             state, size, note = "absent", 0, ""
             if os.path.isfile(stored):
@@ -1875,7 +1907,9 @@ def stock_remove(kind, name=None):
     p = subprocess.run([IMPORTER, "deactivate", "--profile", kind], capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
         raise ValueError((p.stderr or p.stdout).strip()[-300:] or "could not remove")
-    shutil.rmtree(os.path.join(ASSET_STORE, kind), ignore_errors=True)
+    shutil.rmtree(os.path.join(_store_of(profiles[kind]), kind), ignore_errors=True)
+    if kind == "amazonwake":
+        _restart_voice_assistant()
     if kind == "speaker":
         _reload_dsp()
     return PROFILE_REMOVED.get(
@@ -1968,6 +2002,14 @@ def stock_import(kind, staging):
         return _import_led(staging)
     if kind not in _asset_profiles():
         raise ValueError("unknown kind")
+    if kind == "amazonwake":
+        p = subprocess.run([IMPORTER, "import-owner", staging], capture_output=True, text=True, timeout=240)
+        if p.returncode != 0:
+            raise ValueError((p.stderr or p.stdout).strip().splitlines()[-1].replace(
+                "biscuit-import-assets: ", "")[-400:] if (p.stderr or p.stdout).strip() else "import failed")
+        _restart_voice_assistant()
+        return ("Imported. " + p.stdout.strip().splitlines()[-1] + " Choose \"Alexa (Amazon engine)\" as the "
+                "wake word in Home Assistant once the assistant has restarted.")
     p = subprocess.run([IMPORTER, "import", staging, "--profile", kind], capture_output=True,
                        text=True, timeout=120)
     if p.returncode == 2 and kind == "speaker":

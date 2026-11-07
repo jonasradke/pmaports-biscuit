@@ -202,6 +202,10 @@ class LVAEvent(str, Enum):
     VOLUME_MUTED = "volume_muted"
     ZEROCONF = "zeroconf"
     LIGHT_COMMAND = "light_command"
+    STOP_REQUESTED = "stop_requested"        # BISCUIT
+    INTERCOM_CALLING = "intercom_calling"    # BISCUIT
+    INTERCOM_RINGING = "intercom_ringing"    # BISCUIT
+    INTERCOM_TALKING = "intercom_talking"    # BISCUIT
 
 
 class LVACommand(str, Enum):

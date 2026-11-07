@@ -36,6 +36,10 @@ from getmac import get_mac_address  # type: ignore
 from pymicro_wakeword import MicroWakeWord, MicroWakeWordFeatures
 from pyopen_wakeword import OpenWakeWord, OpenWakeWordFeatures
 
+from functools import partial
+from .arbitration import Arbiter, WakeScore
+from . import amazon_wake
+from . import intercom as biscuit_intercom
 from .models import Preferences, ServerState, WakeWordType, initial_stop_word_threshold
 from .mpv_player import MpvMediaPlayer
 from .peripheral_api import LVAEvent, PeripheralAPIServer
@@ -570,6 +574,8 @@ async def main() -> None:
 
     wake_word_dirs.append(args.download_dir / "external_wake_words")
     available_wake_words = find_available_wake_words(wake_word_dirs, args.stop_model)
+    # BISCUIT: Amazon's engine, if the owner imported it. Otherwise nothing changes.
+    amazon_wake.offer(available_wake_words)
 
     # Load preferences
     preferences_path = Path(args.preferences_file)
@@ -819,6 +825,35 @@ async def main() -> None:
     # ------------------------------------------------------------------
     # Audio processing thread
     # ------------------------------------------------------------------
+    # BISCUIT: only the Echo that heard it best answers. Off until paired, and
+    # a failure here must not cost the assistant, so it just goes without.
+    state.arbiter = None
+    try:
+        state.arbiter = Arbiter(
+            state.name,
+            lambda: [w.wake_word for w in list(state.wake_words.values())
+                     if w.id in state.active_wake_words],
+        )
+        state.arbiter.start()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Wake word arbitration is not available")
+        state.arbiter = None
+
+    # BISCUIT: talking between paired Echos. Nothing runs before they are paired.
+    state.intercom = None
+    if state.arbiter is not None:
+        try:
+            def _intercom_changed(status, peer):
+                satellite = state.satellite
+                if satellite is not None:
+                    satellite.intercom_changed(status, peer)
+
+            state.intercom = biscuit_intercom.from_arbiter(state, state.arbiter, _intercom_changed)
+            state.intercom.start()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("The intercom is not available")
+            state.intercom = None
+
     process_audio_thread = threading.Thread(
         target=process_audio,
         args=(state, mic, args.audio_input_block_size),
@@ -1009,6 +1044,7 @@ def process_audio(state: ServerState, mic, block_size: int):
     _qualification_v1.claim_realtime()
     n_channels = state.audio_input_channels
 
+    wake_score = WakeScore()  # BISCUIT
     wake_words: List[Union[MicroWakeWord, OpenWakeWord]] = []
     micro_features: Optional[MicroWakeWordFeatures] = None
     micro_inputs: List[np.ndarray] = []
@@ -1194,6 +1230,45 @@ def process_audio(state: ServerState, mic, block_size: int):
                             oww_features.process_streaming(wake_audio_chunk)
                         )
 
+                    # BISCUIT: a call up, the microphone also goes to the other Echo.
+                    intercom = getattr(state, "intercom", None)
+                    if intercom is not None:
+                        intercom.feed_mic(audio_chunk)
+
+                    # BISCUIT: how clearly this Echo hears, for arbitration.
+                    # Before the AGC, which exists to hide exactly that.
+                    arbiter = getattr(state, "arbiter", None)
+                    if arbiter is not None and arbiter.sock is not None:
+                        wake_score.feed(audio_chunk)
+
+                    # BISCUIT: Amazon's engine hears the same audio as the other wake
+                    # words, in its own process. It also runs for sound detection.
+                    amazon_audio = amazon_wake.AUDIO_SIDE
+                    amazon_stop = False
+                    if amazon_audio is not None:
+                        amazon_index, amazon_word = next(
+                            ((i, w) for i, w in enumerate(wake_words)
+                             if isinstance(w, amazon_wake.AmazonWakeWord)), (0, None))
+                        if amazon_word is not None:
+                            # Before the block: the first thing this may do is pick the model's file.
+                            amazon_audio.engine.set_threshold(
+                                state.wake_word_2_threshold if amazon_index == 1
+                                else state.wake_word_1_threshold)
+                        heard = amazon_audio.block(
+                            wake_audio_chunk,
+                            amazon_word is not None,
+                            bool(satellite is not None and satellite._timer_finished),
+                            state.music_player.is_playing,
+                            state.tts_player.is_playing,
+                            listening=bool(satellite is not None and satellite._is_streaming_audio),
+                        )
+                        amazon_stop = amazon_word is not None and amazon_audio.engine.pop_accepted("STOP")
+                        if heard and satellite is not None:
+                            satellite.sounds_heard(heard)
+                        whispered = amazon_audio.engine.pop_whisper()
+                        if whispered is not None and satellite is not None:
+                            satellite.whisper_result(whispered)
+
                     activated_any = False
                     for wake_word_index, wake_word in enumerate(wake_words):
                         activated = False
@@ -1226,6 +1301,8 @@ def process_audio(state: ServerState, mic, block_size: int):
                                     if prob > threshold:
                                         _LOGGER.debug("Wake word '%s' activated (probability %.3f exceeded threshold %.3f)", wake_word.wake_word, prob, threshold)  # type: ignore[attr-defined]
                                         activated = True
+                        elif isinstance(wake_word, amazon_wake.AmazonWakeWord):
+                            activated = wake_word.detected()
 
                         if activated and not state.muted:
                             # Check refractory
@@ -1233,7 +1310,15 @@ def process_audio(state: ServerState, mic, block_size: int):
                             if (last_active is None) or ((now - last_active) > state.refractory_seconds):
                                 satellite = state.satellite
                                 if satellite is not None:
-                                    satellite.wakeup(wake_word)
+                                    phrase = wake_word.wake_word  # type: ignore[union-attr]
+                                    if arbiter is not None and arbiter.contested(phrase):
+                                        # Whoever is mid-conversation or ringing
+                                        # keeps it: that is where the person is.
+                                        busy = satellite._pipeline_active or satellite._timer_finished
+                                        arbiter.claim(phrase, wake_score.value(), 1 if busy else 0,
+                                                      partial(satellite.wakeup, wake_word))
+                                    else:
+                                        satellite.wakeup(wake_word)
                                 else:
                                     wake_word_phrase = wake_word.wake_word  # type: ignore[union-attr]
                                     _LOGGER.info(
@@ -1248,6 +1333,16 @@ def process_audio(state: ServerState, mic, block_size: int):
                                         )
                                 last_active = now
                             activated_any = True
+
+                    # BISCUIT: the engine listens for "stop" for about two seconds
+                    # after "Alexa", so this is "Alexa, stop". After the wake word
+                    # above: the two arrive in that order and the run it began is
+                    # what this acts on.
+                    if amazon_stop and satellite is not None and not state.muted:
+                        satellite.alexa_stop()
+                        activated_any = True
+                    if amazon_audio is not None and satellite is not None:
+                        satellite.after_alexa_stop(amazon_audio.rms, amazon_audio.peak)
 
                     # Always process to keep state correct
                     stopped = False
